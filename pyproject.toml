@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+extend-exclude = ["validation/gem5/gem5-src", "build", "results", "refs"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+# E402: scripts insert the repo root on sys.path before importing uarchre
+# E731: short lambdas bound to names are used as small local adapters
+# B905: zip() strictness is not worth the noise in analysis code
+ignore = ["E402", "E731", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+"validation/gem5/config_o3.py" = ["F821"]   # gem5 injects m5 names at runtime

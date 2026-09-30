@@ -1,0 +1,72 @@
+# Anomaly-rule thresholds (anomaly.py). Tuned only on synthetic curves, the toy model and
+# gem5; to be frozen, with the commit hash, before any M1 data.
+frozen: false
+frozen_commit: null
+
+# A1 shape.extra_step: a split is a step when the 3-point medians either side rise by > min_rise.
+# Neighbouring steps are one transition (a depth >= 2 staircase) unless plateau_pts points with
+# spread (max/min - 1) below plateau_flat lie between them.
+A1:
+  min_rise: 0.4
+  plateau_pts: 3
+  plateau_flat: 0.2
+  max_transitions: 1
+
+# A2 shape.poor_fit: quality = 1 - SSE_two_segment / SSE_one_line.
+A2:
+  min_quality: 0.6
+
+# A3 tie.rob: estimate >= (1 - tol) x ROB estimate, or the two CIs overlap. Branch is exempt.
+A3:
+  tol: 0.08
+
+# A4 ratio.retire_group: r = NOP estimate / R, R = the common load/store/branch estimate. Fires when
+# those agree within agree, r is within int_tol (relative) of a whole number, NOP > nop_factor x each,
+# and r >= min_ratio (min_ratio_no_branch without a branch curve: LQ = SQ can coincide).
+A4:
+  min_ratio: 2.0
+  min_ratio_no_branch: 3.0
+  int_tol: 0.06
+  agree: 0.10
+  nop_factor: 1.5
+
+# A5 delay.disagreement: miss and ALU-delay estimates of one filler differ by more than
+# (sum of half CI widths) + max(abs_floor, rel x mean). abs_floor is the L1 tolerance.
+A5:
+  rel: 0.05
+  abs_floor: 2.0
+
+# A6 jitter.band: 10-90 % transition width (or CI width) above max(abs_width, rel_width x knee),
+# plus alu_ramp_per_link x depth for an ALU delay (it retires link by link).
+A6:
+  abs_width: 4
+  rel_width: 0.03
+  alu_ramp_per_link: 0.5
+
+# A7 offset.depth_inconsistent: CIs at different depths disjoint by more than slack entries.
+A7:
+  slack: 1.0
+
+# A8 drift.reps: (a) |clock_ratio_post / clock_ratio_pre - 1| > clock; (b) Kruskal-Wallis across
+# outer reps, p < kw_p and per-rep median residuals spread by > min_effect; (c) |Spearman rho| of
+# residual vs order_index > rho. Not applied on toy or gem5.
+A8:
+  clock: 0.02
+  kw_p: 0.01
+  min_effect: 0.02
+  rho: 0.3
+
+# A9 noise.outlier: a repetition outside the moving-median band by more than mads robust sigmas
+# (1.4826 x MAD of the relative residuals, floored at floor).
+A9:
+  window: 5
+  mads: 5.0
+  floor: 0.005
+
+# A10 throughput.bound: 2 x knee / width (cycles to issue the fillers) above frac x the plateau.
+A10:
+  frac: 0.5
+
+# A12 noise.unstable_knee: share of bootstrap resamples with no step.
+A12:
+  max_frac_no_knee: 0.05

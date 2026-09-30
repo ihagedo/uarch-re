@@ -1,0 +1,591 @@
+# Knee-to-size offsets: structure = knee + offset. See offsets.py.
+# Toy entries are written by validation/toy/calibrate_offsets.py --write;
+# gem5 entries come from tools/rob_summary.py (results/gem5/<prefix>-summary/calibration.json).
+- id: abstract.toy.nop.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.nop.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.nop.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.int.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.int.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 2
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.int.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.fp.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 1
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.fp.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 2
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.fp.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 3
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.load.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.load.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 2
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.load.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.store.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 1
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.store.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 2
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.store.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 3
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.mix.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: mix
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.mix.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: mix
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.mix.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: mix
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.nop.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 12
+  delay: fp
+  offset: 7
+  offset_sd: 0.4
+  slope: 0.9909
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.int.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 12
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.load.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 12
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.store.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 12
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.mix.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: mix
+  depth: 12
+  delay: fp
+  offset: 7
+  offset_sd: 0.4
+  slope: 0.9909
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.nop.d12.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 12
+  delay: int
+  offset: 7
+  offset_sd: 0.4
+  slope: 0.9909
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.fp.d12.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 12
+  delay: int
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.load.d12.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 12
+  delay: int
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.store.d12.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 12
+  delay: int
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.mix.d12.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: mix
+  depth: 12
+  delay: int
+  offset: 7
+  offset_sd: 0.4
+  slope: 0.9909
+  n_configs: 5
+  evidence: validation/toy/calibrate_offsets.py
+- id: abstract.toy.branch.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.nop.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 8
+  delay: fp
+  offset: 5
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.int.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.fp.d8.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 8
+  delay: int
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.load.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.store.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 8
+  delay: fp
+  offset: 5
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 12
+  delay: fp
+  offset: 6
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: riscv64.gem5.nop.d1.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: nop
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 7
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.nop.d2.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: nop
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 7
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.nop.d12.fp
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: nop
+  depth: 12
+  delay: fp
+  offset: 6
+  offset_sd: 0.495
+  slope: 1.0016
+  n_configs: 7
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.fp.d1.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: fp
+  depth: 1
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.int.d1.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: int
+  depth: 1
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.load.d12.fp
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: load
+  depth: 12
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.load.d1.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: load
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.store.d12.fp
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: store
+  depth: 12
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: riscv64.gem5.store.d1.miss
+  emitter: riscv64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (RISC-V O3)
+  filler: store
+  depth: 1
+  delay: miss
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: gem5 sweeps results/gem5/{p11,p12,p13}-*
+- id: aarch64.gem5.nop.d1.miss
+  emitter: aarch64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (ARM O3, ArmO3CPU + ArmPMU, numROBEntries 32-256)
+  filler: nop
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 7
+  evidence: results/gem5/arm-summary/calibration.json
+- id: aarch64.gem5.nop.d2.miss
+  emitter: aarch64
+  platform: gem5
+  calibrated_on: gem5-o3-v25.1 (ARM O3, ArmO3CPU + ArmPMU, numROBEntries 32-256)
+  filler: nop
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 7
+  evidence: results/gem5/arm-summary/calibration.json

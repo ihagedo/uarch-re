@@ -1,0 +1,14 @@
+validation/gem5/gem5-src
+validation/gem5/build.log
+results/**/*.bin
+__pycache__/
+*.pyc
+*.o
+/build/
+# build output, results and refs live on local scratch (/var/tmp/$USER/uarch-re);
+# these are symlinks, so no trailing slash. See tools/env.sh.
+/build
+/results
+/refs
+# external repos, papers
+refs/
