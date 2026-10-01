@@ -1,0 +1,22 @@
+# Firestorm (Apple M1 P-core) window-probe knees published by Maynard Handley: his
+# filler counts at the transition behind a chained-FSQRT delay (`fp`) or a DRAM miss
+# (`miss`). Knees only, so only the cross-curve rules apply; `truth` holds the sizes
+# he infers and the rules never see it.
+core: firestorm
+platform: m1
+emitter: aarch64
+offset: 0            # published knees are already capacity readings
+widths: {nop: 8}
+curves:
+  - {filler: nop,   delay: fp,   knee: [2228, 2300], src: Handley}
+  - {filler: load,  delay: fp,   knee: 330,          src: Handley}
+  - {filler: load,  delay: miss, knee: 125,          src: Handley}
+  - {filler: store, delay: fp,   knee: 330,          src: Handley}
+  - {filler: store, delay: miss, knee: 100,          src: Handley}
+truth:
+  retire_rows: 330
+  retire_group: 7
+  load_queue: 130
+  store_queue: 60
+  ls_scheduler: 48
+expect: [delay.disagreement, ratio.retire_group]

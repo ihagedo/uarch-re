@@ -1,0 +1,122 @@
+# Toy offsets for the branch filler and ALU delays (validation/toy/mech_offsets.py),
+# used by the anomaly fixtures. Same format as uarchre/analysis/offsets.yaml.
+- id: abstract.toy.branch.d1.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 1
+  delay: miss
+  offset: 2
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d2.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 2
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d3.miss
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 3
+  delay: miss
+  offset: 3
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.nop.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: nop
+  depth: 8
+  delay: fp
+  offset: 5
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.int.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: int
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.fp.d8.int
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: fp
+  depth: 8
+  delay: int
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.load.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: load
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.store.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: store
+  depth: 8
+  delay: fp
+  offset: 0
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d8.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 8
+  delay: fp
+  offset: 5
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py
+- id: abstract.toy.branch.d12.fp
+  emitter: abstract
+  platform: toy
+  calibrated_on: toy (uarchre/backends/platform/toy.py defaults)
+  filler: branch
+  depth: 12
+  delay: fp
+  offset: 6
+  offset_sd: 0.0
+  slope: 1.0
+  n_configs: 5
+  evidence: validation/toy/mech_offsets.py

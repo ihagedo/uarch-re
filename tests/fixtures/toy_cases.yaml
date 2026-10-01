@@ -1,0 +1,124 @@
+# Toy configurations for the anomaly rules (P0.3): window-probe kernels on run_toy, one
+# outer rep (the toy is deterministic); each case must fire exactly `expect`.
+# cfg: ToyConfig overrides. curves: filler, depth (1), delay (miss), n = coarse grid "lo:hi:step".
+# offsets: "textbook" swaps in the old 2 x depth offset model (A7 positive).
+
+- name: classic
+  why: separated limits, dispatch-time LSQ, calibrated offsets; nothing should fire
+  cfg: {rob: 128, int_prf: 96, fp_prf: 112, lq: 48, sq: 40}
+  curves:
+    - {filler: nop, n: "40:176:8"}
+    - {filler: nop, depth: 2, n: "40:176:8"}
+    - {filler: int, n: "16:104:8"}
+    - {filler: fp, n: "16:120:8"}
+    - {filler: load, n: "8:88:8"}
+    - {filler: store, n: "8:80:8"}
+    - {filler: branch, n: "40:176:8"}
+    - {filler: load, depth: 8, delay: fp, n: "8:88:8"}
+    - {filler: store, depth: 8, delay: fp, n: "8:80:8"}
+  expect: []
+
+- name: near_tie
+  why: int headroom 94 within 8 % of ROB 96 (window_sweep near-tie)
+  cfg: {rob: 96, int_prf: 126, fp_prf: 512, lq: 256, sq: 256}
+  curves:
+    - {filler: nop, n: "40:136:8"}
+    - {filler: int, n: "40:136:8"}
+  expect: [tie.rob]
+
+- name: separated
+  why: int headroom 60 vs ROB 96 (window_sweep negative control)
+  cfg: {rob: 96, int_prf: 92, fp_prf: 512, lq: 256, sq: 256}
+  curves:
+    - {filler: nop, n: "40:136:8"}
+    - {filler: int, n: "16:104:8"}
+  expect: []
+
+- name: r10k
+  why: R10K teaching core, int headroom 31 vs active list 32
+  cfg: {rob: 32, int_prf: 64, arch_int: 33, fp_prf: 64, lq: 16, sq: 16, width: 4}
+  curves:
+    - {filler: nop, n: "8:56:4"}
+    - {filler: int, n: "8:56:4"}
+  expect: [tie.rob]
+
+- name: retire_groups
+  why: 48 retire rows of 7, one failable op per row (P4.1)
+  cfg: {rob: 48, retire_group: 7, failable_per_group: 1, width: 8, miss_latency: 300,
+        int_prf: 512, fp_prf: 512, lq: 256, sq: 256}
+  curves:
+    - {filler: nop, n: "200:440:8"}
+    - {filler: load, n: "16:96:4"}
+    - {filler: store, n: "16:96:4"}
+    - {filler: branch, n: "16:96:4"}
+  expect: [ratio.retire_group]
+
+- name: dispatch_lsq
+  why: LQ 32 / SQ 24 allocated at dispatch; miss and ALU delays agree (A5 negative control)
+  cfg: {rob: 128, int_prf: 512, fp_prf: 512, lq: 32, sq: 24}
+  curves:
+    - {filler: nop, n: "40:176:8"}
+    - {filler: load, n: "8:88:4"}
+    - {filler: store, n: "8:88:4"}
+    - {filler: load, depth: 8, delay: fp, n: "8:88:4"}
+    - {filler: store, depth: 8, delay: fp, n: "8:88:4"}
+  expect: []
+
+- name: issue_time_lsq
+  why: >-
+    LQ 32 / SQ 24 allocated at issue behind a 16-entry LS scheduler, with
+    non-speculative early release (P4.2). Miss delay: load 30 (the delay loads
+    compete for LQ), store 39 (SQ + scheduler). ALU delay: both reach the ROB,
+    so they also tie with the NOP knee (A3), which is the truth about those
+    readings.
+  cfg: {rob: 128, int_prf: 512, fp_prf: 512, lq: 32, sq: 24, lsq_alloc: issue, ls_sched: 16,
+        lq_release_early: true, sq_release_early: true}
+  curves:
+    - {filler: nop, n: "40:176:8"}
+    - {filler: load, n: "8:176:8"}
+    - {filler: store, n: "8:176:8"}
+    - {filler: nop, depth: 8, delay: fp, n: "40:176:8"}
+    - {filler: load, depth: 8, delay: fp, n: "8:176:8"}
+    - {filler: store, depth: 8, delay: fp, n: "8:176:8"}
+  expect: [delay.disagreement, tie.rob]
+
+- name: mini_firestorm
+  why: >-
+    retire rows (48 x 7, one failable per row) plus issue-time LSQ with early
+    release: the toy version of the published Firestorm pattern (NOP 7x the
+    failable knee; LQ/SQ readings depend on the delay)
+  cfg: {rob: 48, retire_group: 7, failable_per_group: 1, width: 8, int_prf: 512, fp_prf: 512,
+        lq: 32, sq: 24, lsq_alloc: issue, ls_sched: 16, lq_release_early: true, sq_release_early: true}
+  curves:
+    - {filler: nop, n: "200:440:8"}
+    - {filler: load, n: "8:96:4"}
+    - {filler: store, n: "8:96:4"}
+    - {filler: branch, n: "8:96:4"}
+    - {filler: load, depth: 8, delay: fp, n: "8:96:4"}
+    - {filler: store, depth: 8, delay: fp, n: "8:96:4"}
+  expect: [delay.disagreement, ratio.retire_group]
+
+- name: two_level_sq
+  why: store queue of 16 fast + 48 slow entries (P4.4); the store curve steps twice
+  cfg: {rob: 256, int_prf: 512, fp_prf: 512, lq: 256, sq_levels: [16, 48]}
+  curves:
+    - {filler: nop, n: "128:320:8"}
+    - {filler: store, n: "2:96:2"}
+  expect: [shape.extra_step]
+
+- name: throughput_bound
+  why: an 80-cycle miss at width 4 - issuing 2 x 126 NOPs takes 63 cycles
+  cfg: {rob: 128, miss_latency: 80, width: 4, int_prf: 512, fp_prf: 512, lq: 256, sq: 256}
+  curves:
+    - {filler: nop, n: "40:176:8"}
+  expect: [throughput.bound]
+
+- name: textbook_offsets
+  why: classic ROB 64 at depths 1-3 analysed with the old 2 x depth offsets (64, 65, 67)
+  cfg: {rob: 64, int_prf: 512, fp_prf: 512, lq: 256, sq: 256}
+  offsets: textbook
+  curves:
+    - {filler: nop, n: "24:104:8"}
+    - {filler: nop, depth: 2, n: "24:104:8"}
+    - {filler: nop, depth: 3, n: "24:104:8"}
+  expect: [offset.depth_inconsistent]
