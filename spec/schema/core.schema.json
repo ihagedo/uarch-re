@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uarch-re/spec/schema/core.schema.json",
+  "title": "uarch-re core description",
+  "description": "Behavioral spec of one core. Sections hold fields, groups of fields, or lists of fields. Every field carries a provenance tag; null values are gaps, never guesses.",
+  "type": "object",
+  "required": ["core", "isa", "frontend", "decoupling", "backend", "memory"],
+  "properties": {
+    "core": {"type": "string"},
+    "isa": {"enum": ["aarch64", "x86_64", "riscv64", "mips4"]},
+    "sources": {"type": "array", "items": {"type": "string"}},
+    "note": {"type": "string"},
+    "frontend": {"$ref": "#/$defs/section"},
+    "decoupling": {"$ref": "#/$defs/section"},
+    "backend": {"$ref": "#/$defs/section"},
+    "memory": {"$ref": "#/$defs/section"}
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+    "section": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/entry"}
+    },
+
+    "entry": {
+      "anyOf": [
+        {"$ref": "#/$defs/field"},
+        {"$ref": "#/$defs/group"},
+        {"type": "array", "items": {"$ref": "#/$defs/field"}}
+      ]
+    },
+
+    "group": {
+      "description": "Structure made of several fields, e.g. retire. `model` names a non-classic mechanism so analysis and exporters do not force it into a standard shape.",
+      "type": "object",
+      "not": {"required": ["provenance"]},
+      "properties": {"model": {"type": "string"}},
+      "additionalProperties": {"$ref": "#/$defs/entry"}
+    },
+
+    "field": {
+      "type": "object",
+      "required": ["provenance"],
+      "properties": {
+        "provenance": {"enum": ["measured", "documented", "inferred", "speculative"]},
+        "value": {"type": ["number", "string", "boolean", "null"]},
+        "unit": {"type": "string"},
+        "approx": {"type": "boolean"},
+        "range": {"$ref": "#/$defs/pair"},
+        "ci": {"$ref": "#/$defs/pair"},
+        "evidence": {"type": "string"},
+        "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "note": {"type": "string"},
+        "documented_value": {"type": ["number", "string", "null"]},
+        "ci_method": {"enum": ["bootstrap", "bracket", "published"],
+                      "description": "bootstrap = percentile interval over outer repetitions; bracket = grid resolution only; published = taken from the source"},
+        "ci_level": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "n_reps": {"type": "integer", "minimum": 1},
+        "resolution": {"$ref": "#/$defs/pair"},
+        "offset": {
+          "description": "Calibrated knee-to-size offset already included in value and ci.",
+          "type": "object",
+          "required": ["value", "calibration"],
+          "properties": {"value": {"type": "number"}, "sd": {"type": "number", "minimum": 0},
+                         "calibration": {"type": "string"}},
+          "additionalProperties": false
+        },
+        "bound": {
+          "description": "What a flagged measurement still supports, e.g. {lower: 94} for a near-tie.",
+          "type": "object",
+          "minProperties": 1,
+          "properties": {"lower": {"type": "number"}, "upper": {"type": "number"}},
+          "additionalProperties": false
+        },
+        "anomalies": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                      "description": "Ids of the anomaly rules that fired, e.g. delay.disagreement."}
+      },
+      "additionalProperties": {
+        "description": "Structure-specific quantities such as size_kib, latency_cycles, entries, ways, shared_by.",
+        "type": ["number", "string", "boolean", "null"]
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provenance": {"const": "measured"}}},
+          "then": {"required": ["evidence"]}
+        },
+        {
+          "if": {
+            "properties": {"provenance": {"const": "measured"}, "value": {"type": "number"}},
+            "required": ["value"]
+          },
+          "then": {"required": ["ci", "ci_method"]}
+        },
+        {
+          "if": {"required": ["bound"]},
+          "then": {"required": ["anomalies"], "properties": {"value": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"provenance": {"enum": ["documented", "inferred"]}}},
+          "then": {"required": ["sources"]}
+        }
+      ]
+    },
+
+    "pair": {
+      "type": "array",
+      "items": {"type": "number"},
+      "minItems": 2,
+      "maxItems": 2
+    }
+  }
+}

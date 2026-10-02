@@ -1,0 +1,44 @@
+# Source registry. Spec fields cite these ids in `sources:`.
+# tools/validate_specs.py rejects documented/inferred fields whose ids are not here.
+
+yeager1996:
+  cite: 'K. C. Yeager, "The MIPS R10000 Superscalar Microprocessor"'
+  doi: 10.1109/40.491460
+  kind: vendor   # designer's own description -> fields citing it are "documented"
+
+dougallj-firestorm:
+  cite: Dougall Johnson, "Firestorm Overview"
+  url: https://dougallj.github.io/applecpu/firestorm.html
+  kind: reverse-engineering
+
+dougallj-applecpu:
+  cite: Dougall Johnson, applecpu repository
+  url: https://github.com/dougallj/applecpu
+  kind: reverse-engineering
+
+dougallj-lsq:
+  cite: 'Dougall Johnson, "Apple M1: Load and Store Queue Measurements"'
+  kind: reverse-engineering
+
+handley-m1-explainer:
+  cite: Maynard Handley, "M1 Explainer"
+  url: https://github.com/name99-org/AArch64-Explore
+  kind: reverse-engineering
+
+apple-cpu-opt-guide:
+  cite: Apple, "Apple Silicon CPU Optimization Guide"
+  kind: vendor
+
+handley-aarch64-explore:
+  cite: Maynard Handley, AArch64-Explore (harness largely by Dougall Johnson)
+  url: https://github.com/name99-org/AArch64-Explore
+  kind: tooling
+
+7cpu-m1:
+  cite: 7-cpu.com, "Apple M1"
+  url: https://www.7-cpu.com/cpu/Apple_M1.html
+  kind: reverse-engineering
+
+wong2013-rob:
+  cite: Henry Wong, "Measuring Reorder Buffer Capacity"
+  kind: method   # basis of the window probe; not a source of values

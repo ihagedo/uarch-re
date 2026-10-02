@@ -1,0 +1,112 @@
+# Apple M1 Firestorm (P-core), the flagship target. Values come from published
+# black-box reverse engineering, hence `inferred` unless tagged otherwise. A field
+# re-measured here becomes `measured` (with ci and evidence) and keeps the
+# published number as `documented_value`.
+core: apple-m1-firestorm
+isa: aarch64
+sources: [dougallj-firestorm, handley-m1-explainer, 7cpu-m1]
+
+frontend:
+  fetch_width:         {value: 8, unit: instr/cycle, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                        note: "NOP stream runs at 8/cycle"}
+  taken_branches_per_cycle: {value: 1, provenance: inferred, sources: [dougallj-firestorm]}
+  l1i:                 {size_kib: 192, provenance: inferred, sources: [7cpu-m1]}
+  btb_levels:
+    - {name: l0, entries: 1024, taken_bubble_cycles: 0, provenance: inferred, sources: [handley-m1-explainer],
+       note: "from third-party studies Handley cites, not his own M1 measurement"}
+    - {name: l1i-as-btb, entries: null, taken_bubble_cycles: 2, provenance: inferred, sources: [handley-m1-explainer],
+       note: "beyond L0 the L1I acts as the next tier"}
+  direction_predictor: {history_bits: null, algorithm: tage-like, provenance: speculative,
+                        note: "history length and capacity unknown"}
+  ras_depth:           {value: null, provenance: speculative}
+  mispredict_penalty:  {value: 13, unit: cycles, provenance: inferred, sources: [7cpu-m1]}
+
+decoupling:
+  fetch_target_queue:  {entries: null, provenance: inferred, sources: [handley-m1-explainer],
+                        note: "decoupled but not 'fully decoupled'; no FTQ in the FDIP sense"}
+  fdip_signature:      {present: false, runahead_bytes: null, provenance: inferred, sources: [handley-m1-explainer],
+                        note: "no run-ahead prefetch past 192 KiB in Cloudflare's data"}
+  dispatch_buffers:
+    int:   {value: 24, provenance: inferred, sources: [handley-m1-explainer, dougallj-firestorm], note: "2 x 12"}
+    mul:   {value: 12, provenance: inferred, sources: [handley-m1-explainer]}
+    flags: {value: 12, approx: true, provenance: inferred, sources: [handley-m1-explainer]}
+    ls:    {value: 10, provenance: inferred, sources: [handley-m1-explainer, dougallj-firestorm]}
+
+backend:
+  rename_width:        {value: 8, unit: uop/cycle, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer]}
+  retire:
+    model: coalesced_retire_groups       # anomaly: not a classic ROB
+    retire_groups:       {value: 330, approx: true, range: [324, 330], provenance: inferred,
+                          sources: [dougallj-firestorm, handley-m1-explainer],
+                          note: "rows of the coalesced retire queue"}
+    group_max_uops:      {value: 7, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                          note: "7-uop groups only for eliminated ops (nop, mov); ~4 issuing uops per group"}
+    failable_per_group:  {value: 1, provenance: inferred, sources: [handley-m1-explainer],
+                          note: "loads, stores, branches must take a row's last slot, so at most ~330 in flight"}
+    rename_retire_queue: {value: 623, approx: true, range: [620, 630], provenance: inferred,
+                          sources: [dougallj-firestorm, handley-m1-explainer],
+                          note: "Handley's 'History File'; one slot per renamed register (2 for adds/ldp, 0 for stores); int+FP+flags fillers expose it"}
+    retire_rate:         {value: 8, unit: groups/cycle, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                          note: "registers and RRQ slots freed at 16/cycle"}
+    nop_window:          {value: 2270, approx: true, range: [2228, 2300], provenance: inferred,
+                          sources: [handley-m1-explainer, dougallj-firestorm],
+                          note: "glitch at 2228 NOPs, ~2274, ~2300 with mov xn,xn; ~rows x 7, not a ROB size"}
+  int_prf:             {value: null, range: [378, 394], provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                        note: "Dougall '~380-394?'; Handley 378-380 with ADD fillers, ~418 with mov #imm (extra immediate registers)"}
+  fp_prf:              {value: 432, approx: true, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                        note: "Handley ~432 with UDIV delay, ~415 with FSQRT delay (the delay uses FP regs)"}
+  flags_prf:           {value: 128, approx: true, range: [124, 128], provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer]}
+  lsq_allocation:      {value: "virtual: ordering IDs at rename, physical LQ/SQ slots at issue; LQ slots released early when no older store",
+                        provenance: inferred, sources: [handley-m1-explainer], note: "makes apparent LQ/SQ size depend on the delay type"}
+  load_queue:          {value: 130, approx: true, provenance: inferred, sources: [dougallj-firestorm, dougallj-lsq, handley-m1-explainer],
+                        window_probe_expected: 125,
+                        note: "genuine ~130; apparent ~330 (FSQRT delay), ~125 (miss-to-DRAM delay, our probe), ~188 (FSQRT + unknown store address)"}
+  store_queue:         {value: 60, approx: true, provenance: inferred, sources: [dougallj-firestorm, dougallj-lsq, handley-m1-explainer],
+                        window_probe_expected: 100,
+                        note: "genuine ~60; apparent ~330 (FSQRT delay), ~100 (miss-to-DRAM delay, our probe), ~118 (delayed store address)"}
+  scheduler_queues:
+    ls:  {value: 48, provenance: inferred, sources: [handley-m1-explainer], note: "4 x 12"}
+    mul: {value: 13, approx: true, provenance: inferred, sources: [handley-m1-explainer], note: "per queue, paired"}
+    fp:  {value: 18, approx: true, provenance: inferred, sources: [handley-m1-explainer], note: "per queue"}
+    note_on_dougall_diagram: {value: "non-LS queue sizes ~2x too large (paired queues look like one)",
+                              provenance: inferred, sources: [handley-m1-explainer]}
+  move_elimination:    {value: "mov x,x (64-bit); mov #imm (max 2 per 8 instr); movi/mov v full-width",
+                        provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
+                        note: "not eliminated: mov w,w; mov x,xzr (runs on ALUs); adr/adrp (eliminated from A15 on); mov xn,xn behaves as NOP"}
+  zero_idioms:         {value: "mov x,#0; movi v,#0", provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer]}
+  fusion:              {value: "flag-setting ALU + b.cc; ALU + cbz/cbnz; aese+aesmc; aesd+aesimc; pmull+eor",
+                        provenance: inferred, sources: [dougallj-firestorm],
+                        note: "M1 does not fuse NOP with the next instruction"}
+  ports:
+    - {name: int1,  ops: "alu ubfm/sbfm flags branch adr mrs",          scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int2,  ops: "alu ubfm/sbfm flags branch adr indirect ptrauth", scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int3,  ops: "alu ubfm/sbfm flags mov-from-simd?",          scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int4,  ops: "alu ubfm/sbfm mov-from-simd?",                scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int5,  ops: "alu ubfm/sbfm mul div",                       scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int6,  ops: "alu ubfm/sbfm mul madd crc bfm/extr",         scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: ls7,   ops: "store amx",                                   scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: ls8,   ops: "load/store amx",                              scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: ls9,   ops: "load",                                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: ls10,  ops: "load",                                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: fp11,  ops: "fp/simd",                                     scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: fp12,  ops: "fp/simd",                                     scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: fp13,  ops: "fp/simd fcsel to-gpr",                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: fp14,  ops: "fp/simd fcsel to-gpr fcmp fdiv frecpe frsqrte sha", scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+
+memory:
+  l1d:   {size_kib: 128, line_bytes: 64, ways: 8, latency_cycles: 3, provenance: inferred,
+          sources: [7cpu-m1, dougallj-firestorm, handley-m1-explainer],
+          note: "3c pointer chase; 4c with complex address or ALU in the chain"}
+  l2:    {size_mib: 12, shared_by: 4, line_bytes: 128, latency_cycles: 18, provenance: inferred,
+          sources: [7cpu-m1, handley-m1-explainer],
+          note: "Handley ~15-16c in places; ~7.5 MiB effective per core; power-gated in thirds, per an Apple patent"}
+  slc:   {size_mib: 8, line_bytes: 128, latency_cycles: 90, approx: true, provenance: inferred, sources: [7cpu-m1, handley-m1-explainer],
+          note: "listed as L3 by 7-cpu; shared by all clusters"}
+  dram_latency: {value: 300, unit: cycles, approx: true, range: [300, 350], provenance: inferred, sources: [handley-m1-explainer, 7cpu-m1],
+                 note: "~100 ns"}
+  dtlb_l1: {entries: 160, miss_penalty_cycles: 6, provenance: documented, sources: [apple-cpu-opt-guide, 7cpu-m1],
+            note: "16 KiB pages"}
+  dtlb_l2: {entries: 3072, approx: true, miss_penalty_cycles: 26, provenance: inferred, sources: [7cpu-m1, handley-m1-explainer]}
+  prefetch: {value: "catches constant-stride chains even when dependent", provenance: inferred, sources: [handley-m1-explainer],
+             note: "window-probe chains must be fully random over >= 256 MiB, one node per 128 B line, no power-of-2 spacing"}
+  mlp:   {value: null, provenance: speculative}
