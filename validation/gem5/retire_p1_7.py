@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P1.7 retire bandwidth on gem5 O3 (RISC-V): three probes, commitWidth 1..8.
+"""P1.7 retire bandwidth on gem5 O3 (RISC-V or ARM): three probes, commitWidth 1..8.
 
   drain   Handley's retire drain: cycles/iter = a + K / retire width
   window  P1.1 window probe, 64-entry ROB: slope past the knee = 2 / min(retire, rename)
-  stream  K NOPs alone: 1 / slope is the narrowest stage (6 int ALUs on RISC-V gem5)
+  stream  K NOPs alone: 1 / slope is the narrowest stage (6 int ALUs on RISC-V; ARM nops skip the IQ)
 CONTROLS run at commitWidth 8 with another stage changed; a retire method reads 8 on all.
 
-  validation/gem5/retire_p1_7.py --jobs 12     # writes results/gem5/retire-p1_7/data.json
+  validation/gem5/retire_p1_7.py --jobs 12 [--isa aarch64]  # results/gem5/[arm-]retire-p1_7/data.json
 """
 
 import argparse
@@ -24,6 +24,7 @@ from uarchre.kernels.scheduler import retire_drain, nop_stream, from_window
 from uarchre.kernels.window import window_probe
 
 OUT = os.path.join(ROOT, "results", "gem5", "retire-p1_7")
+ISA = "riscv64"
 WIDTHS = [1, 2, 3, 4, 5, 6, 7, 8]
 WINDOW_WIDTHS = [2, 4, 6, 8]
 CONTROLS = {  # name: (top-level params, --set overrides)
@@ -35,8 +36,9 @@ CONTROLS = {  # name: (top-level params, --set overrides)
 DRAIN_K = list(range(0, 257, 16))
 WINDOW_N = list(range(32, 161, 4))
 STREAM_K = [64, 128, 192, 256]
-DRAIN_BASE = {"numROBEntries": 512, "numPhysIntRegs": 80}  # int headroom 48 < 64 adds
+DRAIN_BASE = {"numROBEntries": 512, "numPhysIntRegs": 80}  # int headroom 48 (ARM 38) < 64 adds
 WINDOW_BASE = {"numROBEntries": 64}
+ARM_WIDTHS = [2, 4, 6, 8]  # --isa aarch64 validates the AArch64 kernels: these widths, control F4C8
 
 
 def warm(cycles):
@@ -48,8 +50,8 @@ def warm(cycles):
 def launches():
     cfgs = [(f"C{c}", {"commitWidth": c}, []) for c in WIDTHS] + [(n, p, s) for n, (p, s) in CONTROLS.items()]
     for name, p, sets in cfgs:
-        pts = [("drain", k, retire_drain(k)) for k in DRAIN_K] + [
-            ("stream", k, nop_stream(k)) for k in STREAM_K
+        pts = [("drain", k, retire_drain(k, isa=ISA)) for k in DRAIN_K] + [
+            ("stream", k, nop_stream(k, ISA)) for k in STREAM_K
         ]
         yield (
             name,
@@ -58,7 +60,7 @@ def launches():
             dict(params={**DRAIN_BASE, **p}, sets=sets, iters=100, reps=3, chain_bytes=256 << 10),
         )
         if name in CONTROLS or p["commitWidth"] in WINDOW_WIDTHS:
-            pts = [("window", n, from_window(window_probe("nop", n))) for n in WINDOW_N]
+            pts = [("window", n, from_window(window_probe("nop", n), ISA)) for n in WINDOW_N]
             yield (
                 name,
                 p,
@@ -68,9 +70,14 @@ def launches():
 
 
 def main():
+    global ISA, OUT, WIDTHS, CONTROLS
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=12)
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     args = ap.parse_args()
+    if args.isa == "aarch64":
+        ISA, OUT = "aarch64", os.path.join(ROOT, "results", "gem5", "arm-retire-p1_7")
+        WIDTHS, CONTROLS = ARM_WIDTHS, {"F4C8": CONTROLS["F4C8"]}
     os.makedirs(OUT, exist_ok=True)
     todo = list(launches())
     print(f"{len(todo)} gem5 launches, {sum(len(t[2]) for t in todo)} points", flush=True)

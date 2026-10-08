@@ -6,12 +6,12 @@ one on the L2: independent 64 B strides, dependent 64 B and 256 B strides, a ran
 chain (plus L1 and L2 hit references) and the window probe's own two chains, whose L2
 miss fraction is read from gem5 counters dumped around the timed chase.
 
-    python3 validation/gem5/mem_prefetch.py
+    python3 validation/gem5/mem_prefetch.py [--isa aarch64]
 """
 
 import os
 
-from mem_common import run_jobs, RESULTS
+from mem_common import run_jobs, RESULTS, isa_args, for_isa
 
 OUT = os.path.join(RESULTS, "mem-prefetch", "results.json")
 F = 4 << 20
@@ -40,4 +40,14 @@ def jobs():
 
 
 if __name__ == "__main__":
-    run_jobs("mem_prefetch", jobs(), OUT)
+    import sys
+
+    isa, _ = isa_args(sys.argv[1:])
+    if isa == "aarch64":
+        run_jobs(
+            "arm_mem_prefetch",
+            for_isa(jobs(), isa),
+            os.path.join(RESULTS, "arm-memory-prefetch", "results.json"),
+        )
+    else:
+        run_jobs("mem_prefetch", jobs(), OUT)

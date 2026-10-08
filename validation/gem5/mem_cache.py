@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""P2.1 on gem5 O3 (RISC-V): cache capacity, latency, line size and associativity.
+"""P2.1 on gem5 O3 (RISC-V or ARM): cache capacity, latency, line size and associativity.
 
-Phases (results/gem5/mem-cache/<phase>.json): coarse (random chase, 4 KiB..8 MiB, five
-cache configurations), fine (a finer grid inside each transition coarse found, never
-placed from the configured size), latency (L1D and L2 hit latency), line (pair chase:
-the cost per pair doubles once D reaches the line size), assoc (K nodes a set span apart).
+Phases (results/gem5/mem-cache/<phase>.json): coarse (random chase, 4 KiB..8 MiB, five cache
+configurations), fine (a finer grid inside each transition coarse found, never placed from the
+configured size), latency (L1D and L2 hit latency), line (pair chase: the cost per pair doubles once
+D reaches the line size), assoc (K nodes a set span apart). ARM: ARM_PHASES into arm-memory-cache/.
 
-    python3 validation/gem5/mem_cache.py coarse fine latency line assoc
+    python3 validation/gem5/mem_cache.py [--isa aarch64] coarse fine latency line assoc
 """
 
 import os
 import sys
 
-from mem_common import run_jobs, load, med, RESULTS, log
+from mem_common import run_jobs, load, med, RESULTS, log, isa_args, for_isa
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from uarchre.kernels.memory import plateau_onset
 
 OUT = os.path.join(RESULTS, "mem-cache")
+ARM_OUT = os.path.join(RESULTS, "arm-memory-cache")
 KB, MB = 1 << 10, 1 << 20
 NL, REPS = 1000, 3
 
@@ -39,14 +40,14 @@ def coarse_grid():
     return [int(4 * KB * 2 ** (k / 2)) // 64 * 64 for k in range(0, 2 * 11 + 1)]  # 4 KiB .. 8 MiB
 
 
-def coarse_jobs():
+def coarse_jobs(names=tuple(CAP)):
     fs = coarse_grid()
     # two full warm passes for everything up to 2 MiB (the largest L2), the
     # default cap (20000 loads) above, where every load misses anyway
     small = [f for f in fs if f <= 2 * MB]
     big = [f for f in fs if f > 2 * MB]
     argv = ["lat", "rand", 64, NL, REPS, 0, 1, f"w={2 * (2 * MB) // 64}", *small, "w=20000", *big]
-    return [{"key": n, "cfg": n, "argv": argv, "params": {}, "sets": cap_sets(n)} for n in CAP]
+    return [{"key": n, "cfg": n, "argv": argv, "params": {}, "sets": cap_sets(n)} for n in names]
 
 
 def levels(xs, ys):
@@ -79,10 +80,10 @@ def coarse_curve(rec):
     return xs, [med(d[str(x)]) for x in xs]
 
 
-def fine_jobs():
-    co = load(os.path.join(OUT, "coarse.json"))
+def fine_jobs(names=tuple(CAP), out=OUT):
+    co = load(os.path.join(out, "coarse.json"))
     jobs = []
-    for n in CAP:
+    for n in names:
         xs, ys = coarse_curve(co[n])
         for i, (lo, hi, ylo, yhi) in enumerate(levels(xs, ys)[:2]):
             fs = fine_grid(lo, hi)
@@ -115,10 +116,10 @@ L1_LAT = [1, 2, 3, 4, 6]
 L2_LAT = [5, 10, 15, 20, 30]
 
 
-def latency_jobs():
+def latency_jobs(l1_lat=L1_LAT, l2_lat=L2_LAT):
     argv = ["lat", "rand", 64, NL, REPS, 0, 1, 8 * KB, 128 * KB]
     jobs = []
-    for x in L1_LAT:
+    for x in l1_lat:
         jobs.append(
             {
                 "key": f"l1d{x}",
@@ -129,7 +130,7 @@ def latency_jobs():
                 "sets": [f"cpu.dcache.tag_latency={x}", f"cpu.dcache.data_latency={x}"],
             }
         )
-    for x in L2_LAT:
+    for x in l2_lat:
         jobs.append(
             {
                 "key": f"l2{x}",
@@ -147,9 +148,9 @@ LINES = [32, 64, 128, 256]
 PAIR_D = [8, 16, 32, 64, 128, 256, 512]
 
 
-def line_jobs():
+def line_jobs(lines=LINES):
     jobs = []
-    for b in LINES:
+    for b in lines:
         sets = [f"cache_line_size={b}"]
         if b < 64:
             sets.append(f"cpu.fetchBufferSize={b}")  # O3 needs fetch buffer <= line
@@ -169,10 +170,10 @@ L1_ASSOC = [2, 4, 8, 16]
 L2_ASSOC = [4, 8, 16]
 
 
-def assoc_jobs():
+def assoc_jobs(l1_assoc=L1_ASSOC, l2_assoc=L2_ASSOC):
     jobs = []
     ks = list(range(1, 25))
-    for a in L1_ASSOC:
+    for a in l1_assoc:
         jobs.append(
             {
                 "key": f"l1a{a}",
@@ -184,7 +185,7 @@ def assoc_jobs():
                 "sets": [f"cpu.dcache.assoc={a}"],
             }
         )
-    for a in L2_ASSOC:
+    for a in l2_assoc:
         jobs.append(
             {
                 "key": f"l2a{a}",
@@ -208,14 +209,33 @@ PHASES = {
     "assoc": assoc_jobs,
 }
 
+# aarch64: three configurations and two or three values per parameter
+ARM_CAP = ["l1d16k-l2128k", "l1d48k-l2512k", "l1d128k-l22m"]
+ARM_PHASES = {
+    "coarse": lambda: coarse_jobs(ARM_CAP),
+    "fine": lambda: fine_jobs(ARM_CAP, ARM_OUT),
+    "latency": lambda: latency_jobs([2, 4], [10, 20]),
+    "line": lambda: line_jobs([32, 64, 128]),
+    "assoc": lambda: assoc_jobs([2, 4, 8], []),
+}
+
 if __name__ == "__main__":
     from concurrent.futures import ThreadPoolExecutor
 
-    want = sys.argv[1:] or ["coarse", "latency", "line", "assoc", "fine"]
+    isa, want = isa_args(sys.argv[1:])
+    want = want or ["coarse", "latency", "line", "assoc", "fine"]
+    phases, out, name = PHASES, OUT, "mem_cache"
+    if isa == "aarch64":
+        phases, out, name = ARM_PHASES, ARM_OUT, "arm_mem_cache"
     # independent phases run side by side; `fine` needs `coarse` first
     first = [p for p in want if p != "fine"]
     with ThreadPoolExecutor(len(first) or 1) as ex:
-        list(ex.map(lambda p: run_jobs(f"mem_cache_{p}", PHASES[p](), os.path.join(OUT, f"{p}.json")), first))
+        list(
+            ex.map(
+                lambda p: run_jobs(f"{name}_{p}", for_isa(phases[p](), isa), os.path.join(out, f"{p}.json")),
+                first,
+            )
+        )
     if "fine" in want:
-        run_jobs("mem_cache_fine", fine_jobs(), os.path.join(OUT, "fine.json"))
-    log("mem_cache", "all phases done")
+        run_jobs(f"{name}_fine", for_isa(phases["fine"](), isa), os.path.join(out, "fine.json"))
+    log(name, "all phases done")

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P3.6 return-address-stack depth on gem5 O3 (RISC-V).
+"""P3.6 return-address-stack depth on gem5 O3 (RISC-V, or ARM with --isa aarch64).
 
 One run per RAS size R and placement seed sweeps call depth D = 1..DMAX (ras_source).
 M(D) = T(D) - T(D-1) is ~2 cycles while every return is predicted and one mispredict
 more once D > R; depth = last D on the low segment (offset 0: the harness's call is level 1).
 
-  . tools/env.sh && python3 validation/gem5/fp_ras.py            # campaign + summary
-  python3 validation/gem5/fp_ras.py --analyze                    # summary only
+  . tools/env.sh && python3 validation/gem5/fp_ras.py [--isa aarch64]   # campaign + summary
+  python3 validation/gem5/fp_ras.py --analyze                           # summary only
 """
 
 import argparse
@@ -27,15 +27,20 @@ SIZES = [8, 12, 16, 24, 32, 48, 64]
 SEEDS = [0, 1, 2]
 DMAX = 128
 ITERS, REPS, WARM = 32, 3, 4
+ISA = "riscv64"
+ARM_OUT, ARM_SIZES, ARM_SEEDS = os.path.join(RESULTS, "arm-fp-ras"), [8, 16, 32, 48], [0, 1]
 
 
 def run_one(job):
     r, seed = job
-    src = ras_source(dmax=DMAX, iters=ITERS, reps=REPS, warm=WARM, seed=seed)
-    pts, od = run_points(src, f"fp_ras_s{seed}", sets=[f"cpu.branchPred.ras.numEntries={r}"])
+    src = ras_source(dmax=DMAX, iters=ITERS, reps=REPS, warm=WARM, seed=seed, isa=ISA)
+    pts, od = run_points(src, f"fp_ras_s{seed}", sets=[f"cpu.branchPred.ras.numEntries={r}"], isa=ISA)
     took = config_value(od, "system.cpu.branchPred.ras", "numEntries")
     st = {k: g5.stat(od, f"system.cpu.branchPred.ras.{k}") for k in ("correct", "incorrect", "used")}
-    log("fp-ras", f"R={r} seed={seed} config numEntries={took} ras.incorrect={st['incorrect']} outdir={od}")
+    log(
+        os.path.basename(OUT),
+        f"R={r} seed={seed} config numEntries={took} ras.incorrect={st['incorrect']} outdir={od}",
+    )
     return {
         "ras": r,
         "seed": seed,
@@ -96,9 +101,13 @@ def analyze(raw):
 
 
 def main():
+    global ISA, OUT, SIZES, SEEDS
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze", action="store_true")
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     a = ap.parse_args()
+    if a.isa == "aarch64":
+        ISA, OUT, SIZES, SEEDS = a.isa, ARM_OUT, ARM_SIZES, ARM_SEEDS
     raw_path = os.path.join(OUT, "raw.json")
     if not a.analyze:
         raw = pmap(run_one, [(r, s) for r in SIZES for s in SEEDS])
@@ -108,7 +117,7 @@ def main():
     save_json(os.path.join(OUT, "summary.json"), summ)
     for s in summ:
         log(
-            "fp-ras",
+            os.path.basename(OUT),
             f"R={s['truth']:3d} detected={s['detected']} ci={s['ci']} err={s['error']} "
             f"pass={s['pass']} jump={s['jump_ratio']:.2f} low={s['cost_low']:.2f} high={s['cost_high']:.2f} "
             f"ras.incorrect={s['ras_incorrect_stat']} (>= {s['ras_incorrect_expected_min']} expected)",

@@ -1,8 +1,9 @@
 """Shared runner for the frontend-predictor campaigns (validation/gem5/fp_*.py).
 
 run_points(src, name, ...) compiles one harness from uarchre/kernels/predictors.py,
-runs it under gem5 O3 and returns ({key: [cycles per rep]}, outdir). Runs with
-`fdp_args` go through fp_config.py, which attaches a FetchDirectedPrefetcher.
+runs it under gem5 O3 (isa="aarch64": the ARM build) and returns ({key: [cycles per
+rep]}, outdir). Runs with `fdp_args` go through fp_config.py, which attaches a
+FetchDirectedPrefetcher.
 """
 
 import hashlib
@@ -27,9 +28,10 @@ CACHE = os.path.join(ROOT, "build", "fp_cache")
 _compile_lock = threading.Lock()  # compile_source's tmp name is per process, not per thread
 
 
-def _run_fdp(binpath, argv, params, sets, fdp_args):
+def _run_fdp(binpath, argv, params, sets, fdp_args, isa="riscv64"):
     """Like gem5.run_gem5_binary, through fp_config.py (FDP wiring)."""
-    tail = [FP_CONFIG, *fdp_args, "--isa", "riscv", "--cmd", binpath, "--args", " ".join(map(str, argv))]
+    args = " ".join(map(str, argv))
+    tail = [FP_CONFIG, *fdp_args, "--isa", g5.GEM5_ISA[isa], "--cmd", binpath, "--args", args]
     for k, v in (params or {}).items():
         tail += [f"--{k}", str(v)]
     for s in sets:
@@ -37,7 +39,7 @@ def _run_fdp(binpath, argv, params, sets, fdp_args):
     tag = hashlib.md5(" ".join(tail).encode()).hexdigest()[:10]
     outdir = os.path.join(ROOT, "build", "gem5out", f"{os.path.basename(binpath)}_{tag}")
     os.makedirs(outdir, exist_ok=True)
-    cmd = ["taskset", "-c", g5.CPUS, g5.GEM5["riscv64"], "-q", "--outdir", outdir, *tail]
+    cmd = ["taskset", "-c", g5.CPUS, g5.GEM5[isa], "-q", "--outdir", outdir, *tail]
     with g5.slot():
         r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -47,15 +49,15 @@ def _run_fdp(binpath, argv, params, sets, fdp_args):
     return r.stdout, outdir
 
 
-def compile_src(src, name):
+def compile_src(src, name, isa="riscv64"):
     with _compile_lock:
-        return g5.compile_c(src, name)
+        return g5.compile_c(src, name, isa)
 
 
-def run_points(src, name, params=None, sets=(), argv=(), fdp_args=None):
+def run_points(src, name, params=None, sets=(), argv=(), fdp_args=None, isa="riscv64"):
     """Compile + run one harness; stdout is cached by (binary, params, sets), so
     re-running a campaign only simulates what is missing."""
-    b = compile_src(src, name)
+    b = compile_src(src, name, isa)
     key = hashlib.md5(json.dumps([b, list(argv), params or {}, list(sets), fdp_args]).encode()).hexdigest()
     cpath = os.path.join(CACHE, key + ".json")
     if os.path.exists(cpath):
@@ -63,9 +65,9 @@ def run_points(src, name, params=None, sets=(), argv=(), fdp_args=None):
         out, od = c["stdout"], c["outdir"]
     else:
         if fdp_args is None:
-            out, od = g5.run_gem5_binary(b, list(argv), params=params or {}, sets=list(sets))
+            out, od = g5.run_gem5_binary(b, list(argv), params=params or {}, sets=list(sets), isa=isa)
         else:
-            out, od = _run_fdp(b, list(argv), params, list(sets), list(fdp_args))
+            out, od = _run_fdp(b, list(argv), params, list(sets), list(fdp_args), isa)
         save_json(cpath, {"stdout": out, "outdir": od, "binary": b, "sets": list(sets)})
     pts = parse_points(out)
     if not pts:

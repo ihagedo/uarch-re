@@ -1,12 +1,14 @@
 """P2 memory probes (uarchre/kernels/memory.py) and the campaign helpers in
 validation/gem5/mem_*.py. The only binary run is a tiny native x86 chase
-(skipped without gcc or off x86-64).
+(skipped without gcc or off x86-64); the AArch64 sources are cross-compiled.
 
     python3 -m unittest tests.test_memory
 """
 
+import hashlib
 import os
 import platform
+import re
 import shutil
 import sys
 import unittest
@@ -46,6 +48,10 @@ class TestParse(unittest.TestCase):
         self.assertEqual(runs["mlp"][8], [170.25])
         self.assertAlmostEqual(sc["clock_ratio"], 0.6812)
         self.assertEqual(sc["tsc_hz"], 2688000000.0)
+
+    def test_counter_hz(self):
+        _, sc = M.parse_runs("counter_hz 24576000000\nclock_ratio 7.6800\nR code 64 0 61.2\n")
+        self.assertEqual(sc, {"counter_hz": 24576000000.0, "clock_ratio": 7.68})
 
 
 class TestSource(unittest.TestCase):
@@ -95,6 +101,119 @@ class TestMoreSources(unittest.TestCase):
         self.assertIn("sd a0, 32(t1)", src)
         self.assertIn("divu t1, s3, s2", src)
         self.assertIn("ld a1, 0(s4)", M.memdep_source([4], alias=False))
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+class TestAArch64(unittest.TestCase):
+    def test_riscv_and_x86_sources_unchanged(self):
+        """The RISC-V and x86 results were measured with exactly these sources."""
+        self.assertEqual(sha(M.chase_source("riscv64")), "db378e91130aaa49")
+        self.assertEqual(sha(M.chase_source("x86_64")), "f8d88832a3f77e37")
+        self.assertEqual(sha(M.memdep_source([4, 5, 6, 130, 384])), "c7a16557b2c34dbb")
+        self.assertEqual(sha(M.memdep_source([4, 64], alias=False)), "efcff2e2409d63c9")
+
+    def test_sources_generate(self):
+        for counter, marker in [
+            ("pmccntr", "pmccntr_el0"),
+            ("cntvct", "cntvct_el0"),
+            ("mach", "mach_absolute_time"),
+        ]:
+            src = M.chase_source("aarch64", counter)
+            self.assertNotRegex(src, r"@[A-Z_0-9]+@")
+            self.assertIn(marker, src)
+            self.assertIn('!strcmp(mode, "code")', src)
+            self.assertIn("#define LINE 128", src)
+            # m5 ops only under gem5; hardware counters print the clock ratio instead
+            self.assertEqual("0xff400110" in src, counter == "pmccntr")
+            self.assertEqual("uarchre_clock_ratio" in src, counter != "pmccntr")
+        self.assertIn("sys_icache_invalidate", M.chase_source("aarch64", "mach"))
+        with self.assertRaises(ValueError):
+            M.chase_source("aarch64", "rdtsc")
+
+    def test_m1_register_rules(self):
+        """No adr/adrp, never x18/x29/x30, anywhere in the generated AArch64 programs."""
+        srcs = [M.chase_source("aarch64", c) for c in ("pmccntr", "cntvct", "mach")]
+        srcs += [M.memdep_source([4, 384], True, "aarch64"), M.memdep_source([4], False, "aarch64")]
+        for src in srcs:
+            self.assertNotRegex(src, r"\b([xw](18|29|30)|adrp?)\b")
+
+    def test_mlp_register_budget(self):
+        self.assertEqual(M.MLP_A64_KMAX, 56)
+        self.assertEqual(len(set(M.MLP_A64_INT)), 25)
+        for r in ("x0", "x1", "x2", "x18", "x29", "x30"):
+            self.assertNotIn(r, M.MLP_A64_INT)
+        src = M.chase_source("aarch64")
+        self.assertIn("static void mlp_56(", src)
+        self.assertNotIn("static void mlp_57(", src)
+        body = src[src.index("static void mlp_56(") : src.index("static void (*const MLP_FN")]
+        loop = body[body.index('"1:') : body.index("b.ne 1b")]
+        self.assertEqual(loop.count("ldr "), 56)  # one load per chain per iteration
+        self.assertEqual(loop.count("fmov "), 2 * 56)  # every step: fmov, ldr, fmov
+
+    def test_memdep_blocks(self):
+        src = M.memdep_source([4, 384], True, "aarch64")
+        self.assertIn("static void mda_384(", src)
+        self.assertIn("str x12, [x9, #6128]", src)  # slot 383: scaled imm12 reaches every slot
+        self.assertIn("ldr x14, [x10, #6128]", src)
+        self.assertIn("ldr x14, [x11, #16]", M.memdep_source([4], False, "aarch64"))
+        block = re.findall(r'"(udiv|str|ldr|nop)\b', src[src.index("static void mda_4(") :])[:4]
+        self.assertEqual(block, ["udiv", "str", "ldr", "nop"])  # 4 slots per block, as on RISC-V
+
+    @unittest.skipUnless(
+        shutil.which("aarch64-linux-gnu-gcc"), "needs the AArch64 cross compiler (. tools/env.sh)"
+    )
+    def test_cross_compiles(self):
+        import subprocess
+        import tempfile
+
+        from uarchre.backends.platform.gem5 import TOOLCHAIN
+
+        cc, cflags = TOOLCHAIN["aarch64"]
+        srcs = {
+            "pmccntr": M.chase_source("aarch64"),
+            "cntvct": M.chase_source("aarch64", "cntvct"),
+            "memdep": M.memdep_source(list(range(2, 20)) + [384], True, "aarch64"),
+            "memdep_n": M.memdep_source([4, 64], False, "aarch64", "cntvct"),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, src in srcs.items():
+                c = os.path.join(d, name + ".c")
+                with open(c, "w") as fh:
+                    fh.write(src)
+                r = subprocess.run(
+                    [cc, *cflags, "-static", "-Wall", "-Werror", c, "-o", c[:-2]],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(r.returncode, 0, f"{name}: {r.stderr[-2000:]}")
+
+
+class TestDrivers(unittest.TestCase):
+    def test_isa_args(self):
+        from mem_common import isa_args, for_isa
+
+        self.assertEqual(isa_args(["coarse", "fine"]), ("riscv64", ["coarse", "fine"]))
+        self.assertEqual(isa_args(["--isa", "aarch64", "fine"]), ("aarch64", ["fine"]))
+        with self.assertRaises(SystemExit):
+            isa_args(["--isa", "x86_64"])
+        jobs = [{"key": "a"}]
+        self.assertIs(for_isa(jobs, "riscv64"), jobs)
+        self.assertEqual(for_isa(jobs, "aarch64"), [{"key": "a", "isa": "aarch64"}])
+
+    def test_arm_jobs(self):
+        import mem_cache
+        import mem_mlp
+        import mem_tlb
+
+        self.assertNotIn("isa", mem_mlp.jobs()[0])
+        for j in mem_mlp.arm_jobs():
+            self.assertEqual(j["isa"], "aarch64")
+            self.assertEqual(j["argv"][4:6], [0, "n=64"])  # seed, then gem5's 64 B line as the node
+        self.assertEqual(len(mem_cache.ARM_PHASES["coarse"]()), 3)
+        self.assertEqual({j["key"] for j in mem_tlb.arm_jobs()}, {"dtb4", "dtb1024", "itb8", "itb64"})
 
 
 class TestMLPAnalysis(unittest.TestCase):

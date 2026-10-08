@@ -6,17 +6,17 @@ capacity_search() finds the onset to one entry and seeds 1 and 2 re-check it.
 gem5's instShiftAmt defaults to 0, so 4-byte RISC-V instructions reach every fourth
 BTB set; the main series sets 2, the shift0 series keeps 0 (truth numEntries / 4).
 
-    . tools/env.sh && python3 validation/gem5/fe_btb.py [config-name ...]
+    . tools/env.sh && python3 validation/gem5/fe_btb.py [--isa aarch64] [config-name ...]
 """
 
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fe_common import RESULTS, run_fe, pmap, config_value, write_json, capacity_search, geom_grid, med
-from uarchre.kernels.frontend import jump_chain, lap_excess
+from fe_common import run_fe, pmap, config_value, write_json, capacity_search, geom_grid, med
+from fe_common import pop_isa, out_dir
+from uarchre.kernels.frontend import jump_chain, lap_excess, SPELLING
 
-OUT = os.path.join(RESULTS, "fe-btb")
 L1I = ["--l1i", "256kB", "--l2", "1MB"]  # code up to 64 kB stays in L1i: the BTB is the only limit
 REPS = 3
 
@@ -35,6 +35,8 @@ GRID = geom_grid(32, 12288, 4)
 CONFIGS = {f"dm{n}": (n, 1, 2, n) for n in (256, 512, 1024, 2048, 4096)}
 CONFIGS.update({f"a4_{n}": (n, 4, 2, n) for n in (256, 1024, 4096)})
 CONFIGS.update({f"shift0_{n}": (n, 1, 0, n // 4) for n in (1024, 4096)})
+# --isa aarch64: ArmO3CPU has the same default predictor (TournamentBP + SimpleBTB = shift0_4096)
+ARM_CONFIGS = ["dm512", "a4_1024", "dm2048", "shift0_4096"]
 
 
 def sets_for(cfg):
@@ -46,13 +48,13 @@ def sets_for(cfg):
     ]
 
 
-def run_config(name):
+def run_config(name, isa="riscv64"):
     cfg = CONFIGS[name]
     sets = sets_for(cfg)
 
     def measure_seed(n, seed):
         r = run_fe(
-            jump_chain(n, seed),
+            jump_chain(n, seed, isa=SPELLING[isa]),
             laps=laps_for(n),
             reps=REPS,
             sets=sets,
@@ -101,7 +103,7 @@ def run_config(name):
                 "points": {str(n): y for n, y in zip(ns, ys)},
             }
         out["seeds"] = per_seed
-    write_json(os.path.join(OUT, f"{name}.json"), out)
+    write_json(os.path.join(out_dir("fe-btb", isa), f"{name}.json"), out)
     b = out["bracket"]
     det = b[0] if b and b[0] is not None else None
     print(
@@ -112,13 +114,15 @@ def run_config(name):
     return out
 
 
-def main(names):
+def main(args):
     from concurrent.futures import ThreadPoolExecutor
 
+    isa, names = pop_isa(args)
+    names = names or (list(CONFIGS) if isa == "riscv64" else ARM_CONFIGS)
     with ThreadPoolExecutor(len(names)) as ex:
-        outs = list(ex.map(run_config, names))
+        outs = list(ex.map(lambda n: run_config(n, isa), names))
     return outs
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or list(CONFIGS))
+    main(sys.argv[1:])

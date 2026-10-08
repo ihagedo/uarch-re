@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P3.4 direction-predictor history length on gem5 O3 (RISC-V), TAGE.
+"""P3.4 direction-predictor history length on gem5 O3 (RISC-V; ARM: --isa aarch64), TAGE.
 
 history_source(N): branch A on a random bit, N taken jumps, then branch B, with B = A
 (corr), B random (rand) or B taken (const). f(N) = (T_corr - T_const) / (T_rand - T_const)
 is 0 while A is still in the history at B and 1 once it has left; history length = last
 N on the low segment + 1. Truth: TAGE maxHist in {64, 130 (default), 256}.
 
-  . tools/env.sh && python3 validation/gem5/fp_history.py [--analyze]
+  . tools/env.sh && python3 validation/gem5/fp_history.py [--analyze] [--isa aarch64]
 """
 
 import argparse
@@ -26,6 +26,8 @@ HISTS = [64, 130, 256]
 SEEDS = [0, 1]
 GRID = [0, 16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 288, 320, 384]
 ITERS, WARM = 1000, 1000
+ISA = "riscv64"
+ARM_OUT = os.path.join(RESULTS, "arm-fp-history")  # same maxHist values and grid
 
 
 def tage(h):
@@ -36,7 +38,10 @@ def run_one(job):
     """One gem5 run: all N of one (maxHist, seed) round, 3 variants each."""
     h, seed, ns = job
     pts, od = run_points(
-        history_source(list(ns), iters=ITERS, warm=WARM, seed=seed), f"fp_hist_s{seed}", sets=[tage(h)]
+        history_source(list(ns), iters=ITERS, warm=WARM, seed=seed, isa=ISA),
+        f"fp_hist_s{seed}",
+        sets=[tage(h)],
+        isa=ISA,
     )
     took = int(config_value(od, "system.cpu.branchPred.conditionalBranchPred.tage", "maxHist"))
     return [
@@ -90,7 +95,7 @@ def campaign():
         for h in HISTS:
             k, _, ns = knee(raw, h)
             if k.knee is None:
-                log("fp-history", f"maxHist={h}: no knee yet ({k.anomaly})")
+                log(os.path.basename(OUT), f"maxHist={h}: no knee yet ({k.anomaly})")
                 continue
             a = int(k.knee)
             b = ns[ns.index(a) + 1]
@@ -134,15 +139,19 @@ def analyze(raw):
 
 
 def main():
+    global ISA, OUT
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze", action="store_true")
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     a = ap.parse_args()
+    if a.isa == "aarch64":
+        ISA, OUT = a.isa, ARM_OUT
     raw = load_json(os.path.join(OUT, "raw.json")) if a.analyze else campaign()
     summ = analyze(raw)
     save_json(os.path.join(OUT, "summary.json"), summ)
     for s in summ:
         log(
-            "fp-history",
+            os.path.basename(OUT),
             f"maxHist={s['truth']} knee_n={s['knee_n']} detected={s['detected']} ci={s['ci']} "
             f"err={s['error']} pass={s['pass']} jump={s['jump_ratio']:.2f}",
         )

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P3.8 decoupling and fetch-directed prefetch on gem5 O3 (RISC-V).
+"""P3.8 decoupling and fetch-directed prefetch on gem5 O3 (RISC-V; ARM: --isa aarch64).
 
 fdip_source(0): 7168 predictable jumps, one per code line (448 KiB, all DRAM fetches).
 Only decoupled + FDP should beat one memory latency per line: with F FTQ entries ~F-1
 misses overlap until DRAM bandwidth binds. --barrier (a mispredicted return every P
 lines) gives no knee on gem5, which keeps returns out of the BTB.
 
-  . tools/env.sh && python3 validation/gem5/fp_fdip.py [--analyze] [--barrier]
+  . tools/env.sh && python3 validation/gem5/fp_fdip.py [--analyze] [--barrier] [--isa aarch64]
 """
 
 import argparse
@@ -37,13 +37,23 @@ CONFIGS = (
 )
 SEEDS = [1, 2]  # traversal orders
 BARRIER_PERIODS = [[1, 2, 3, 4, 5, 6, 7, 8], [10, 12, 14, 16, 20, 24, 32, 0]]
+ISA = "riscv64"
+ARM_OUT = os.path.join(RESULTS, "arm-fp-fdip")
+ARM_BASE = [b.replace("minInstSize=2", "minInstSize=4") for b in BASE]  # fixed 4 B instructions
+ARM_CONFIGS = (
+    CONFIGS[:2] + [("ftq-only8", True, 8, False)] + [(f"fdp-ftq{f}", True, f, True) for f in (2, 3, 5)]
+)
 
 
 def run_one(job):
     name, dec, f, fdp, periods, seed = job
     sets = BASE + [f"cpu.decoupledFrontEnd={dec}", f"cpu.numFTQEntries={f}"]
     pts, od = run_points(
-        fdip_source(periods, seed=seed), f"fp_fd_s{seed}", sets=sets, fdp_args=["--fdp"] if fdp else []
+        fdip_source(periods, seed=seed, isa=ISA),
+        f"fp_fd_s{seed}",
+        sets=sets,
+        fdp_args=["--fdp"] if fdp else [],
+        isa=ISA,
     )
     return {
         "config": name,
@@ -117,12 +127,16 @@ def barrier_analyze(raw):
 
 
 def main():
+    global ISA, OUT, BASE, CONFIGS
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze", action="store_true")
     ap.add_argument(
         "--barrier", action="store_true", help="re-run the barrier-period sweep (negative finding)"
     )
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     a = ap.parse_args()
+    if a.isa == "aarch64":
+        ISA, OUT, BASE, CONFIGS = a.isa, ARM_OUT, ARM_BASE, ARM_CONFIGS
     if a.barrier:
         cfgs = [
             c
@@ -146,7 +160,7 @@ def main():
     save_json(os.path.join(OUT, "summary.json"), summ)
     for s in summ["configs"]:
         log(
-            "fp-fdip",
+            os.path.basename(OUT),
             f"{s['config']:12s} cyc/line={s['cycles_per_line']:.1f} seeds={s['cycles_per_line_seeds']} "
             f"overlap={s['overlap']:.2f} pf_issued={s['pf_issued']}",
         )

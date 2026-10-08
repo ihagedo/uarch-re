@@ -1,15 +1,18 @@
 """Frontend predictor and decoupling kernels: P3.4 history length, P3.5 indirect capacity,
 P3.6 RAS depth, P3.8 fetch-directed prefetch, P3.9 fetch queue.
 
-Each generator returns a self-contained C source with the kernel as top-level RISC-V asm (.option
-norvc, so layouts are exact). Most time every sweep point inside one gem5 process; P3.8 and P3.9 put
-the swept quantity into the code layout. Every point prints `pt <key> rep <r> cyc <cycles per unit>`
-for parse_points(). Used by validation/gem5/fp_*.py.
+Each generator returns a self-contained C source with the kernel as top-level asm: RISC-V (.option
+norvc, so layouts are exact) or, with isa="aarch64", AArch64 read through `counter` (aarch64.COUNTERS).
+Most time every sweep point inside one gem5 process; P3.8 and P3.9 put the swept quantity into the
+code layout. Every point prints `pt <key> rep <r> cyc <cycles per unit>` for parse_points(). Used by
+validation/gem5/fp_*.py.
 """
 
 import random
 import re
 from collections import defaultdict
+
+from ..backends.isa.aarch64 import COUNTERS
 
 HEAD = r"""
 #include <stdint.h>
@@ -27,6 +30,27 @@ def _toplevel(lines):
     return f'__asm__(\n    ".option push\\n"\n    ".option norvc\\n"\n{body}\n    ".option pop\\n"\n);\n'
 
 
+def _head(isa, counter):
+    if isa == "riscv64":
+        return HEAD
+    if isa != "aarch64":
+        raise ValueError(f"isa must be riscv64 or aarch64, not {isa!r}")
+    head = "\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n" + COUNTERS[counter]
+    return head + "static inline uint64_t cyc(void) { return cycles(); }\n"
+
+
+def _asm(isa, lines):
+    if isa == "riscv64":
+        return _toplevel(lines)
+    body = "\n".join(f'    "{line}\\n"' for line in lines)
+    return f"__asm__(\n{body}\n);\n"
+
+
+def _extern(isa, decl, name):
+    """C declaration of an asm symbol; the AArch64 asm label keeps the name as written (Mach-O)."""
+    return f"extern {decl};" if isa == "riscv64" else f'extern {decl} __asm__("{name}");'
+
+
 _PT = re.compile(r"^pt (\S+) rep (\d+) cyc ([-\d.eE+]+)", re.M)
 
 
@@ -41,7 +65,7 @@ def parse_points(out):
 # ---------------------------------------------- P3.6 return-address-stack depth
 
 
-def ras_source(dmax=128, depths=None, warm=4, iters=48, reps=3, seed=0):
+def ras_source(dmax=128, depths=None, warm=4, iters=48, reps=3, seed=0, isa="riscv64", counter="pmccntr"):
     """C source for the RAS depth sweep: a chain of `dmax` functions, entered at f_{dmax-D} for depth D.
 
     An R-entry RAS mispredicts the outer D-R returns, so T(D) - T(D-1) steps up by one mispredict
@@ -56,6 +80,8 @@ def ras_source(dmax=128, depths=None, warm=4, iters=48, reps=3, seed=0):
         asm += [f".globl ras_f{i}", f"ras_f{i}:"]
         if i == dmax - 1:
             asm += ["ret"]
+        elif isa == "aarch64":
+            asm += ["str x30, [sp, #-16]!", f"bl ras_f{i + 1}", "ldr x30, [sp], #16", "ret"]
         else:
             asm += [
                 "addi sp, sp, -16",
@@ -65,11 +91,11 @@ def ras_source(dmax=128, depths=None, warm=4, iters=48, reps=3, seed=0):
                 "addi sp, sp, 16",
                 "ret",
             ]
-    decl = "\n".join(f"extern void ras_f{i}(void);" for i in range(dmax))
+    decl = "\n".join(_extern(isa, f"void ras_f{i}(void)", f"ras_f{i}") for i in range(dmax))
     table = ", ".join(f"ras_f{dmax - d}" for d in depths)
     return (
-        HEAD
-        + _toplevel(asm)
+        _head(isa, counter)
+        + _asm(isa, asm)
         + decl
         + f"""
 static void (*const entry[])(void) = {{ {table} }};
@@ -95,25 +121,27 @@ int main(void) {{
 # --------------------------------------------- P3.9 fetch-to-decode queue depth
 
 
-def fetchq_source(bs, copies=16, chain=12, stride=64 << 10, iters=12, reps=3, warm=2):
+def fetchq_source(
+    bs, copies=16, chain=12, stride=64 << 10, iters=12, reps=3, warm=2, isa="riscv64", counter="pmccntr"
+):
     """C source for up to stride/4096 points (B NOPs each) of the fetch-queue sweep.
 
-    Each block: an fsqrt chain (backend stall), a serializing CSR read, B NOPs and a jump to a line that
+    Each block: an fsqrt chain (backend stall), a serializing FP status read, B NOPs and a jump to a line that
     misses in L1i and L2; the miss is hidden while the frontend can buffer the NOPs and the jump."""
     bs = [bs] if isinstance(bs, int) else list(bs)
     per = stride // 4096
     assert copies <= 16 and len(bs) <= per and copies * stride <= (1 << 20)
     assert 4 * (max(bs) + chain + 2) + 64 * (copies - 1) < 3904, "block must fit below the tail"
+    a64 = isa == "aarch64"
+    j = "b" if a64 else "j"
     asm = [".text", ".p2align 12"]
     for v in range(len(bs)):
-        asm += [
-            f".globl fq_kern{v}",
-            f"fq_kern{v}:",
-            "fcvt.d.w ft0, zero",
-            "li t0, 4",
-            "fcvt.d.w ft1, t0",  # ft1 = 4.0, sqrt chain stays finite
-            f"j fq_blk{v}_0",
-        ]
+        asm += [f".globl fq_kern{v}", f"fq_kern{v}:"]
+        if a64:
+            asm += ["fmov d1, #4.0", "mov x9, x0", "cmp x0, #0"]  # claim d1, x9 and NZCV
+        else:
+            asm += ["fcvt.d.w ft0, zero", "li t0, 4", "fcvt.d.w ft1, t0"]  # ft1 = 4.0, sqrt stays finite
+        asm += [f"{j} fq_blk{v}_0"]
     # page k*per + v holds block (v, k) at offset 64k and its landing line at 4032 + 4k: one L1i set
     # (63) and one L2 set per variant, thrashed by copies > 8 ways, and one SimpleBTB slot per jump.
     # B + chain + 2 > 128 instructions would put 9+ blocks in one L1i set.
@@ -123,21 +151,21 @@ def fetchq_source(bs, copies=16, chain=12, stride=64 << 10, iters=12, reps=3, wa
             page = f"fq_region + {(k * per + v) * 4096}"
             nxt = f"fq_blk{v}_{k + 1}" if k + 1 < copies else f"fq_tail{v}"
             asm += [f".org {page} + {64 * k}", f"fq_blk{v}_{k}:"]
-            asm += ["fsqrt.d ft1, ft1"] * chain  # backend stall: chain x FloatSqrt latency
-            asm += ["csrr t2, fflags"]  # serialize-after: next instruction waits for an empty ROB
+            asm += ["fsqrt d1, d1" if a64 else "fsqrt.d ft1, ft1"] * chain  # chain x FloatSqrt latency
+            # serializing read: the next instruction waits in rename for an empty ROB (gem5: csrr is
+            # serialize-after, mrs serialize-before)
+            asm += ["mrs x9, fpsr" if a64 else "csrr t2, fflags"]
             asm += ["nop"] * b
-            asm += [f"j fq_land{v}_{k}"]
+            asm += [f"{j} fq_land{v}_{k}"]
             if k == 0:
-                asm += [
-                    f".org {page} + 3904",
-                    f"fq_tail{v}:",
-                    "addi a0, a0, -1",
-                    f"bnez a0, fq_blk{v}_0",
-                    "ret",
-                ]
-            asm += [f".org {page} + {4032 + 4 * k}", f"fq_land{v}_{k}:", f"j {nxt}"]
+                asm += [f".org {page} + 3904", f"fq_tail{v}:"]
+                if a64:
+                    asm += ["subs x0, x0, #1", f"b.ne fq_blk{v}_0", "ret"]
+                else:
+                    asm += ["addi a0, a0, -1", f"bnez a0, fq_blk{v}_0", "ret"]
+            asm += [f".org {page} + {4032 + 4 * k}", f"fq_land{v}_{k}:", f"{j} {nxt}"]
     asm += [f".org fq_region + {copies * stride}"]
-    decl = "\n".join(f"extern void fq_kern{v}(long laps);" for v in range(len(bs)))
+    decl = "\n".join(_extern(isa, f"void fq_kern{v}(long laps)", f"fq_kern{v}") for v in range(len(bs)))
     runs = "\n".join(
         f"""    fq_kern{v}({warm});
     for (int r = 0; r < {reps}; r++) {{
@@ -149,8 +177,8 @@ def fetchq_source(bs, copies=16, chain=12, stride=64 << 10, iters=12, reps=3, wa
         for v, b in enumerate(bs)
     )
     return (
-        HEAD
-        + _toplevel(asm)
+        _head(isa, counter)
+        + _asm(isa, asm)
         + decl
         + f"""
 int main(void) {{
@@ -176,7 +204,7 @@ def fdip_order(n_lines, seed=1):
     return order
 
 
-def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1):
+def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1, isa="riscv64", counter="pmccntr"):
     """C source for one or more barrier periods (0 = none) of the run-ahead sweep.
 
     Each 64 B line is NOPs and a jump to the next line in `fdip_order` (7168 lines exceed L2). Every P-th
@@ -185,40 +213,55 @@ def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1):
     order = fdip_order(n_lines, seed)
     nxt = {order[i]: order[i + 1] for i in range(len(order) - 1)}
     nxt[order[-1]] = None
+    a64 = isa == "aarch64"
+    assert not a64 or n_lines * 64 < 1 << 20, "b.ne back to the first line"
     asm = [".text"]
+    targets = []  # AArch64: barrier targets in traversal order, as line numbers (n_lines = tail)
     for v, period in enumerate(periods):
-        barrier = set()
-        if period:
-            barrier = {order[i] for i in range(period - 1, len(order), period)}
+        barrier = [order[i] for i in range(period - 1, len(order), period)] if period else []
+        targets.append([n_lines if nxt[b] is None else nxt[b] for b in barrier])
+        barrier = set(barrier)
         base = f"fd{v}_lines"
-        asm += [
-            ".p2align 12",
-            f".globl fd_kern{v}",
-            f"fd_kern{v}:",
-            "addi sp, sp, -16",
-            "sd ra, 8(sp)",  # barrier lines overwrite ra
-            f"j fd{v}_l{order[0]}",
-            ".p2align 12",
-            f"{base}:",
-        ]
+        if a64:
+            # x10 walks a table of barrier targets built in C (no adr in timed code); x11 rewinds it
+            asm += [".p2align 12", f".globl fd_kern{v}", f"fd_kern{v}:", "str x30, [sp, #-16]!"]
+            asm += ["mov x11, x1", "mov x10, x1", "cmp x0, #0", f"b fd{v}_l{order[0]}"]
+            asm += [".p2align 12", f".globl {base}", f"{base}:"]
+        else:
+            asm += [
+                ".p2align 12",
+                f".globl fd_kern{v}",
+                f"fd_kern{v}:",
+                "addi sp, sp, -16",
+                "sd ra, 8(sp)",  # barrier lines overwrite ra
+                f"j fd{v}_l{order[0]}",
+                ".p2align 12",
+                f"{base}:",
+            ]
         for line in range(n_lines):
             # distinct slots for up to 7168 jumps in a BTB on pc[2:15) (SimpleBTB with 32768 entries)
             w = 2 + (line >> 9) % 14
             tgt = f"fd{v}_l{nxt[line]}" if nxt[line] is not None else f"fd{v}_tail"
             asm += [f".org {base} + {line * 64}", f"fd{v}_l{line}:"]
-            if line in barrier:
+            if line in barrier and a64:
+                asm += ["ldr x30, [x10], #8"] + ["nop"] * (w - 1) + ["ret"]
+            elif line in barrier:
                 asm += [f"lla ra, {tgt}"] + ["nop"] * (w - 2) + ["ret"]
             else:
-                asm += ["nop"] * w + [f"j {tgt}"]
-        asm += [
-            f".org {base} + {n_lines * 64}",
-            f"fd{v}_tail:",
-            "addi a0, a0, -1",
-            f"bnez a0, fd{v}_l{order[0]}",
-            "ld ra, 8(sp)",
-            "addi sp, sp, 16",
-            "ret",
-        ]
+                asm += ["nop"] * w + [f"{'b' if a64 else 'j'} {tgt}"]
+        asm += [f".org {base} + {n_lines * 64}", f"fd{v}_tail:"]
+        if a64:
+            asm += ["subs x0, x0, #1", "mov x10, x11", f"b.ne fd{v}_l{order[0]}", "ldr x30, [sp], #16", "ret"]
+        else:
+            asm += [
+                "addi a0, a0, -1",
+                f"bnez a0, fd{v}_l{order[0]}",
+                "ld ra, 8(sp)",
+                "addi sp, sp, 16",
+                "ret",
+            ]
+    if a64:
+        return _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter)
     decl = "\n".join(f"extern void fd_kern{v}(long laps);" for v in range(len(periods)))
     runs = "\n".join(
         f"""    fd_kern{v}({warm});
@@ -243,12 +286,53 @@ int main(void) {{
     )
 
 
+def _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter):
+    isa = "aarch64"
+    decl = []
+    for v, t in enumerate(targets):
+        decl += [
+            _extern(isa, f"void fd_kern{v}(long laps, void *const *bt)", f"fd_kern{v}"),
+            _extern(isa, f"char fd{v}_lines[]", f"fd{v}_lines"),
+            f"static const unsigned short fd{v}_bt[] = {{ {', '.join(map(str, t)) or '0'} }};",
+        ]
+    runs = "\n".join(
+        f"""    for (unsigned i = 0; i < {len(t)}; i++) bt[i] = fd{v}_lines + 64 * fd{v}_bt[i];
+    fd_kern{v}({warm}, bt);
+    for (int r = 0; r < {reps}; r++) {{
+        uint64_t t0 = cyc();
+        fd_kern{v}({iters}, bt);
+        uint64_t t1 = cyc();
+        printf("pt {p} rep %d cyc %.4f\\n", r, (double)(t1 - t0) / ({iters} * {n_lines}));
+    }}"""
+        for v, (p, t) in enumerate(zip(periods, targets))
+    )
+    return (
+        _head(isa, counter)
+        + _asm(isa, asm)
+        + "\n".join(decl)
+        + f"""
+int main(void) {{
+    void **bt = malloc(sizeof(void *) * {max(1, *map(len, targets))});
+{runs}
+    return 0;
+}}
+"""
+    )
+
+
 # -------------------------------------- P3.4 direction-predictor history length
 
 
-def _history_fn(name, n, variant):
+def _history_fn(name, n, variant, isa="riscv64"):
     """One loop: LFSR step; branch A on bit 0; N taken filler jumps; branch B.
     variant: corr (B on bit 0, same as A), rand (B on bit 1), const (B on 0)."""
+    if isa == "aarch64":
+        bit_b = {"corr": "x11", "rand": "x12", "const": "xzr"}[variant]
+        a = [".p2align 6", f"{name}:", "mov x11, x10", "mov x12, x10", "cmp x0, #0", "1:"]  # claim
+        a += ["eor x10, x10, x10, lsl #13", "eor x10, x10, x10, lsr #7", "eor x10, x10, x10, lsl #17"]
+        a += ["and x11, x10, #1", "ubfx x12, x10, #1, #1", "cbz x11, 2f", "nop", "2:"]
+        a += ["b 3f", "3:"] * n
+        return a + [f"cbz {bit_b}, 4f", "nop", "4:", "subs x0, x0, #1", "b.ne 1b", "ret"]
     bit_b = {"corr": "t3", "rand": "t4", "const": "zero"}[variant]
     a = [
         ".p2align 6",
@@ -280,7 +364,16 @@ def _history_fn(name, n, variant):
     return a
 
 
-def history_source(ns, iters=1000, warm=1000, reps=2, variants=("corr", "rand", "const"), seed=0):
+def history_source(
+    ns,
+    iters=1000,
+    warm=1000,
+    reps=2,
+    variants=("corr", "rand", "const"),
+    seed=0,
+    isa="riscv64",
+    counter="pmccntr",
+):
     """C source for one or more N (filler counts), each with the three B variants.
 
     Branch B repeats random branch A after N taken fillers, so it is predictable only while the global
@@ -289,7 +382,9 @@ def history_source(ns, iters=1000, warm=1000, reps=2, variants=("corr", "rand", 
     asm = [".text"]
     for n in ns:
         for v in variants:
-            asm += [f".globl hist_{v}_{n}"] + _history_fn(f"hist_{v}_{n}", n, v)
+            asm += [f".globl hist_{v}_{n}"] + _history_fn(f"hist_{v}_{n}", n, v, isa)
+    if isa == "aarch64":
+        return _history_a64(asm, ns, iters, warm, reps, variants, seed, counter)
     decl = "\n".join(f"extern void hist_{v}_{n}(long iters, uint64_t seed);" for n in ns for v in variants)
     calls = "\n".join(
         f"""    {{
@@ -324,14 +419,53 @@ int main(void) {{
     )
 
 
+def _history_a64(asm, ns, iters, warm, reps, variants, seed, counter):
+    isa = "aarch64"
+    decl = "\n".join(_extern(isa, f"void hist_{v}_{n}(void)", f"hist_{v}_{n}") for n in ns for v in variants)
+    calls = "\n".join(
+        f"""    {{
+        void (*volatile fv)(void) = hist_{v}_{n};
+        void (*f)(void) = fv;
+        s = run(f, {warm}, s);
+        for (int r = 0; r < {reps}; r++) {{
+            uint64_t t0 = cyc(); s = run(f, {iters}, s); uint64_t t1 = cyc();
+            printf("pt {v}:{n} rep %d cyc %.4f\\n", r, (double)(t1 - t0) / {iters});
+        }}
+    }}"""
+        for n in ns
+        for v in variants
+    )
+    return (
+        _head(isa, counter)
+        + _asm(isa, asm)
+        + decl
+        + f"""
+/* x10 carries the LFSR state across calls; f comes through a volatile, so no adrp is timed */
+static inline uint64_t run(void (*f)(void), long n, uint64_t s) {{
+    register uint64_t x10 __asm__("x10") = s;
+    register long x0 __asm__("x0") = n;
+    __asm__ __volatile__("blr %2" : "+r"(x0), "+r"(x10) : "r"(f) : "x11", "x12", "x30", "cc", "memory");
+    return x10;
+}}
+int main(void) {{
+    uint64_t s = 0x9E3779B97F4A7C15ull ^ ({seed}ull * 0xD1B54A32D192ED03ull);
+{calls}
+    return 0;
+}}
+"""
+    )
+
+
 # --------------------------------------------- P3.5 indirect-predictor capacity
 
 
-def indirect_source(smax, sizes, targets=1, rounds=8, warm=4, reps=2):
+def indirect_source(smax, sizes, targets=1, rounds=8, warm=4, reps=2, isa="riscv64", counter="pmccntr"):
     """C source for the indirect-capacity sweep (all S in one binary).
 
-    The last S of `smax` jalr sites each call a leaf rotated over `targets` addresses, so cost per call
+    The last S of `smax` jalr/blr sites each call a leaf rotated over `targets` addresses, so cost per call
     steps up once S*T exceeds capacity. Every branch is taken, so the direction history stays constant."""
+    if isa == "aarch64":
+        return _indirect_a64(smax, sizes, targets, rounds, warm, reps, counter)
     asm = [".text", ".p2align 6"]
     for t in range(targets):
         asm += [f".globl ind_leaf{t}", f"ind_leaf{t}:", "ret", ".p2align 4"]
@@ -371,6 +505,53 @@ int main(void) {{
         for (int r = 0; r < {reps}; r++) {{
             uint64_t t0 = cyc();
             for (int n = 0; n < {rounds} * {targets}; n++) run(entry, leaf[n % {targets}]);
+            uint64_t t1 = cyc();
+            printf("pt %d rep %d cyc %.4f\\n", s, r, (double)(t1 - t0) / ({rounds} * {targets}));
+        }}
+    }}
+    return 0;
+}}
+"""
+    )
+
+
+def _indirect_a64(smax, sizes, targets, rounds, warm, reps, counter):
+    isa = "aarch64"
+    asm = [".text", ".p2align 6"]
+    for t in range(targets):
+        asm += [f".globl ind_leaf{t}", f"ind_leaf{t}:", "ret", ".p2align 4"]
+    asm += [".p2align 6", ".globl ind_sites", "ind_sites:"]
+    asm += ["blr x9"] * smax
+    asm += ["ldr x30, [sp], #16", "ret"]
+    asm += [".globl ind_enter", "ind_enter:", "str x30, [sp, #-16]!", "br x0"]  # x0 = entry, x9 = leaf
+    leaves = ", ".join(f"ind_leaf{t}" for t in range(targets))
+    decl = [_extern(isa, f"void ind_leaf{t}(void)", f"ind_leaf{t}") for t in range(targets)]
+    decl += [_extern(isa, "char ind_sites[]", "ind_sites")]
+    return (
+        _head(isa, counter)
+        + _asm(isa, asm)
+        + "\n".join(decl)
+        + f"""
+static void (*const leaf[])(void) = {{ {leaves} }};
+static const int sizes[] = {{ {", ".join(map(str, sizes))} }};
+static inline void run(char *entry, void (*lf)(void)) {{
+    register char *x0 __asm__("x0") = entry;
+    register void (*x9)(void) __asm__("x9") = lf;
+    __asm__ __volatile__("bl ind_enter" : "+r"(x0) : "r"(x9) : "x30", "memory");
+}}
+int main(void) {{
+    /* addresses come through volatiles, so the timed loop has no adrp */
+    char *volatile sv = ind_sites;
+    void (*const *volatile lv)(void) = leaf;
+    char *sites = sv;
+    void (*const *lp)(void) = lv;
+    for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {{
+        int s = sizes[i];
+        char *entry = sites + 4 * ({smax} - s);
+        for (int w = 0; w < {warm} * {targets}; w++) run(entry, lp[w % {targets}]);
+        for (int r = 0; r < {reps}; r++) {{
+            uint64_t t0 = cyc();
+            for (int n = 0; n < {rounds} * {targets}; n++) run(entry, lp[n % {targets}]);
             uint64_t t1 = cyc();
             printf("pt %d rep %d cyc %.4f\\n", s, r, (double)(t1 - t0) / ({rounds} * {targets}));
         }}

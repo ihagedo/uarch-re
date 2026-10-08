@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""P2.3 on gem5 O3 (RISC-V): memory-level parallelism.
+"""P2.3 on gem5 O3 (RISC-V or ARM): memory-level parallelism.
 
-K = 1..48 independent random chains, no fillers. While K <= L1D MSHRs all misses
-overlap and T(K) stays at one miss latency; past it T grows by L/MSHRs per chain.
-Truth: cpu.dcache.mshrs in {4, 8, 16, 32}, ROB, LSQ, PRF and L2 MSHRs set large. Far
-cache: only the L1D MSHRs can bind; DDR5-8400 and DDR3-1600: the memory side may first.
+K = 1..48 independent random chains, no fillers. While K <= L1D MSHRs all misses overlap and T(K) stays
+at one miss latency; past it T grows by L/MSHRs per chain. Truth: cpu.dcache.mshrs in {4, 8, 16, 32},
+ROB, LSQ, PRF and L2 MSHRs set large. Far cache: only the L1D MSHRs can bind; DDR5-8400 and DDR3-1600:
+the memory side may first. ARM runs the far cache with seed 0 (arm_jobs).
 
-    python3 validation/gem5/mem_mlp.py [far] [ddr5] [ddr3] [holdout]
+    python3 validation/gem5/mem_mlp.py [--isa aarch64] [far] [ddr5] [ddr3] [holdout]
 """
 
 import os
 
 import numpy as np
 
-from mem_common import run_jobs, RESULTS
+from mem_common import run_jobs, RESULTS, isa_args, for_isa
 
 OUT = os.path.join(RESULTS, "mem-mlp", "results.json")
 MSHRS = [4, 8, 16, 32]
@@ -107,10 +107,28 @@ def hinge(ks, ts):
     return best[1], best[2]
 
 
+OUT_ARM = os.path.join(RESULTS, "arm-memory-mlp", "far.json")
+# scalar FP draws on the vector register pool on ARM
+ARM_PARAMS = {**PARAMS, "numPhysVecRegs": 512}
+
+
+def arm_jobs():
+    """Far cache, seed 0, with 64 B nodes (gem5's line; the AArch64 probe defaults to 128)."""
+    out = []
+    for j in jobs(("far",)):
+        if j["seed"] == 0:
+            out.append({**j, "argv": j["argv"][:5] + ["n=64"] + j["argv"][5:], "params": ARM_PARAMS})
+    return for_isa(out, "aarch64")
+
+
 if __name__ == "__main__":
     import sys
 
-    want = sys.argv[1:] or ("far", "ddr5", "ddr3")
+    isa, want = isa_args(sys.argv[1:])
+    if isa == "aarch64":
+        run_jobs("arm_mem_mlp", arm_jobs(), OUT_ARM)
+        sys.exit()
+    want = want or ("far", "ddr5", "ddr3")
     if "holdout" in want:
         run_jobs("mem_mlp", holdout_jobs(), OUT_HO)
         want = tuple(m for m in want if m != "holdout")

@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""P2.5 on gem5 O3 (RISC-V): store-to-load forwarding and memory disambiguation.
+"""P2.5 on gem5 O3 (RISC-V or ARM): store-to-load forwarding and memory disambiguation.
 
-N blocks per iteration, each a store whose address waits on a divide and a load that
-aliases it (none in the control). gem5's SSIT is direct mapped on PC/4 and a 16-byte
-block is 4 slots, so SSIT entries = 4 x the last N before the cost per block rises.
-Truth: cpu.SSITSize in {64, 128, 256, 512}, set as "128B" (an int is rejected).
+N blocks per iteration, each a store whose address waits on a divide and a load that aliases it (none
+in the control). gem5's SSIT is direct mapped on PC/4 and a 16-byte block is 4 slots, so SSIT entries
+= 4 x the last N before the cost per block rises. Truth: cpu.SSITSize in {64, 128, 256, 512}, set as
+"128B" (an int is rejected); ARM_SSIT and no holdout on ARM.
 
-    python3 validation/gem5/mem_memdep.py coarse fine holdout
+    python3 validation/gem5/mem_memdep.py [--isa aarch64] coarse fine [holdout]
 """
 
 import os
 import sys
 
-from mem_common import run_jobs, load, med, RESULTS, log
+from mem_common import run_jobs, load, med, RESULTS, log, isa_args, for_isa
 
 OUT = os.path.join(RESULTS, "mem-memdep")
+ARM_OUT = os.path.join(RESULTS, "arm-memory-memdep")
+ARM_SSIT = [64, 128, 256]
 SSIT = [64, 128, 256, 512]
 COARSE = sorted({int(round(4 * 2 ** (k / 4))) for k in range(0, 25)})  # 4 .. 256
 ITERS, REPS = 100, 3
@@ -78,8 +80,8 @@ def bracket(ns, ys, frac=0.1):
     return None
 
 
-def fine_jobs(sizes=SSIT, coarse="coarse.json"):
-    co = load(os.path.join(OUT, coarse))
+def fine_jobs(sizes=SSIT, coarse="coarse.json", out=OUT):
+    co = load(os.path.join(out, coarse))
     jobs = []
     for n in sizes:
         k = f"ssit{n}"
@@ -112,7 +114,17 @@ def fine_jobs(sizes=SSIT, coarse="coarse.json"):
 
 
 if __name__ == "__main__":
-    want = sys.argv[1:] or ["coarse", "fine"]
+    isa, want = isa_args(sys.argv[1:])
+    want = want or ["coarse", "fine"]
+    if isa == "aarch64":
+        if "coarse" in want:
+            run_jobs(
+                "arm_mem_memdep", for_isa(coarse_jobs(ARM_SSIT), isa), os.path.join(ARM_OUT, "coarse.json")
+            )
+        if "fine" in want:
+            jobs = for_isa(fine_jobs(ARM_SSIT, out=ARM_OUT), isa)
+            run_jobs("arm_mem_memdep", jobs, os.path.join(ARM_OUT, "fine.json"))
+        sys.exit()
     if "coarse" in want:
         run_jobs("mem_memdep", coarse_jobs(), os.path.join(OUT, "coarse.json"))
     if "fine" in want:

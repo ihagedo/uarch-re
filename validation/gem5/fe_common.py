@@ -1,8 +1,9 @@
 """Shared runner for the frontend campaigns (validation/gem5/fe_*.py).
 
-run_fe(kernel, ...) compiles a FEKernel's harness for RISC-V, runs it under
-gem5 O3 (validation/gem5/config_o3.py), drops the warm-up rep and returns the
-cycles per unit for every measured rep, plus the outdir for stats/config.ini.
+run_fe(kernel, ...) compiles a FEKernel's harness for its ISA, runs it under
+gem5 O3 (config_o3.py; arm_config_o3.py for AArch64), drops the warm-up rep and
+returns the cycles per unit for every measured rep, plus the outdir for
+stats/config.ini. Drivers take `--isa aarch64` (pop_isa) and write to arm-<name>.
 """
 
 import csv
@@ -21,7 +22,8 @@ from uarchre.backends.platform.gem5 import compile_c, run_gem5_binary, stat
 from uarchre.kernels.frontend import harness_c, parse_reps
 
 RESULTS = os.path.join(ROOT, "results", "gem5")
-CACHE = os.path.join(RESULTS, "fe-cache")  # stdout of every finished run, keyed by binary + args
+# stdout of every finished run, keyed by binary + args
+CACHE = {"riscv64": os.path.join(RESULTS, "fe-cache"), "aarch64": os.path.join(RESULTS, "arm-fe-cache")}
 LOGS = os.path.join(
     os.environ.get("UARCHRE_SCRATCH", f"/var/tmp/{os.environ.get('USER', 'u')}/uarch-re"),
     "logs",
@@ -38,7 +40,23 @@ GATE = threading.BoundedSemaphore(int(os.environ.get("FE_JOBS", "8")))
 
 def build(k):
     with _COMPILE:
-        return compile_c(harness_c(k), k.name)
+        return compile_c(harness_c(k), k.name, isa=k.isa)
+
+
+def pop_isa(argv):
+    """(isa, other args): `--isa aarch64` selects the AArch64 lowering; RISC-V by default."""
+    argv = list(argv)
+    if "--isa" not in argv:
+        return "riscv64", argv
+    i = argv.index("--isa")
+    isa = argv[i + 1]
+    if isa not in CACHE:
+        raise SystemExit(f"--isa must be one of {sorted(CACHE)}")
+    return isa, argv[:i] + argv[i + 2 :]
+
+
+def out_dir(name, isa):
+    return os.path.join(RESULTS, name if isa == "riscv64" else "arm-" + name)
 
 
 WATCHDOG_S = float(os.environ.get("FE_WATCHDOG_S", "900"))
@@ -93,7 +111,7 @@ def run_fe(k, laps=1, reps=3, seed=0, mode=0, params=None, sets=(), config_args=
             [os.path.basename(b), argv, params or {}, list(sets), list(config_args)], sort_keys=True
         ).encode()
     ).hexdigest()[:16]
-    cpath = os.path.join(CACHE, f"{k.name}_{key}.json")
+    cpath = os.path.join(CACHE[k.isa], f"{k.name}_{key}.json")
     hit = None
     if os.path.exists(cpath):
         with open(cpath) as fh:
@@ -105,9 +123,9 @@ def run_fe(k, laps=1, reps=3, seed=0, mode=0, params=None, sets=(), config_args=
     else:
         with GATE:
             out, od = run_gem5_binary(
-                b, argv, params=params or {}, sets=list(sets), config_args=list(config_args)
+                b, argv, params=params or {}, sets=list(sets), isa=k.isa, config_args=list(config_args)
             )
-        os.makedirs(CACHE, exist_ok=True)
+        os.makedirs(CACHE[k.isa], exist_ok=True)
         with open(cpath + ".tmp", "w") as fh:
             json.dump({"stdout": out, "outdir": od}, fh)
         os.replace(cpath + ".tmp", cpath)
@@ -118,7 +136,7 @@ def run_fe(k, laps=1, reps=3, seed=0, mode=0, params=None, sets=(), config_args=
     units = k.units_per_lap * laps
     return {
         "cpu": [c / units for c, _ in meas],
-        "ipc": [i / c for c, i in meas],
+        "ipc": [None if i is None else i / c for c, i in meas],
         "cycles": [c for c, _ in meas],
         "instret": [i for _, i in meas],
         "outdir": od,

@@ -1,8 +1,8 @@
 """Shared runner for the P2 memory campaigns (validation/gem5/mem_*.py).
 
-A campaign is a list of jobs {key, argv, params, sets}. `run_jobs` runs them
-concurrently, stores each finished job (per-rep output, outdir, requested gem5
-stats per m5 dump) in one JSON file, and skips jobs already there.
+A campaign is a list of jobs {key, argv, params, sets}, plus "isa": "aarch64" for gem5 ARM.
+`run_jobs` runs them concurrently, stores each finished job (per-rep output, outdir, requested
+gem5 stats per m5 dump) in one JSON file, and skips jobs already there.
 """
 
 import json
@@ -81,13 +81,31 @@ def _run_fs(job):
     }
 
 
+def isa_args(argv):
+    """(isa, rest of argv): a driver's `--isa riscv64|aarch64` (default riscv64)."""
+    argv, isa = list(argv), "riscv64"
+    if "--isa" in argv:
+        i = argv.index("--isa")
+        isa = argv[i + 1]
+        del argv[i : i + 2]
+    if isa not in ("riscv64", "aarch64"):
+        raise SystemExit(f"--isa riscv64 or aarch64, not {isa}")
+    return isa, argv
+
+
+def for_isa(jobs, isa):
+    """Tag jobs with their ISA; riscv64 jobs stay unchanged."""
+    return jobs if isa == "riscv64" else [{**j, "isa": isa} for j in jobs]
+
+
 def _memdep_bin(job):
-    return M.memdep_binary(job["ns"], job.get("alias", True))
+    return M.memdep_binary(job["ns"], job.get("alias", True), job.get("isa", "riscv64"))
 
 
 def _run_one(job):
     if job.get("fs"):
         return _run_fs(job)
+    isa = job.get("isa", "riscv64")
     if job.get("probe") == "memdep":
         from uarchre.backends.platform.gem5 import run_gem5_binary
 
@@ -96,12 +114,13 @@ def _run_one(job):
             [str(a) for a in job["argv"]],
             job.get("params") or {},
             list(job.get("sets", ())),
+            isa=isa,
         )
         runs, sc = M.parse_runs(out)
         if not runs:
             raise RuntimeError(f"no results:\n{out[-2000:]}")
     else:
-        runs, sc, outdir = M.run_gem5(job["argv"], job.get("params"), job.get("sets", ()))
+        runs, sc, outdir = M.run_gem5(job["argv"], job.get("params"), job.get("sets", ()), isa=isa)
     rec = {
         **job,
         "runs": {t: {str(k): v for k, v in d.items()} for t, d in runs.items()},
@@ -110,7 +129,7 @@ def _run_one(job):
     }
     try:
         dumps = M.gem5_stats_dumps(outdir)
-        rec["stats"] = [{k: d.get(k) for k in STATS} for d in dumps]
+        rec["stats"] = [{k: d.get(k) for k in STATS + job.get("extra_stats", [])} for d in dumps]
     except OSError:
         rec["stats"] = []
     # confirm every --set override reached config.ini
@@ -157,7 +176,7 @@ def run_jobs(name, jobs, out_json, workers=16):
         elif j.get("probe") == "memdep":
             _memdep_bin(j)
         else:
-            M.binary("riscv64")
+            M.binary(j.get("isa", "riscv64"))
     lock = threading.Lock()
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as ex:

@@ -1,16 +1,21 @@
-"""P1.5 / P1.7 kernels (uarchre/kernels/scheduler.py) and their gem5 helpers.
+"""P1.5 / P1.7 kernels (uarchre/kernels/scheduler.py, RISC-V and AArch64) and their gem5 helpers.
 
 python3 -m unittest tests.test_scheduler
 """
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
+from uarchre.backends.isa.aarch64 import AArch64
 from uarchre.kernels.scheduler import (
+    ASM_EMITTERS,
+    A64AsmEmitter,
     sched_probe,
     retire_drain,
     nop_stream,
@@ -118,7 +123,161 @@ class TestMultiPoint(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
 
 
+def _md5(text):
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def _regs(line):
+    """{('x'|'v', n)} named in one AArch64 line (w/x share a number, d/s/q/v too)."""
+    return {("x" if c in "xw" else "v", int(n)) for c, n in re.findall(r"\b([xwdsvq])(\d+)\b", line)}
+
+
+def _compile(src, cc, flags):
+    with tempfile.TemporaryDirectory() as d:
+        c = os.path.join(d, "k.c")
+        with open(c, "w") as fh:
+            fh.write(src)
+        r = subprocess.run(
+            [cc, *flags, "-static", c, "-o", os.path.join(d, "k")], capture_output=True, text=True
+        )
+    return r
+
+
+A64 = "aarch64"
+
+
+def a64_kernels():
+    return [
+        sched_probe("load", 9, isa=A64),
+        sched_probe("store", 3, pre="load", m=2, isa=A64),
+        sched_probe("add", 2, pre="store", m=2, isa=A64),
+        sched_probe("mul", 2, pre="add", m=1, isa=A64),
+        sched_probe("fp", 9, isa=A64),
+        dispatch_probe(9, 9, isa=A64),
+        dispatch_probe(2, 2, x="mul", y="add", isa=A64),
+        retire_drain(3, isa=A64),
+        nop_stream(2, A64),
+        from_window(window_probe("nop", 2), A64),
+    ]
+
+
+class TestAArch64(unittest.TestCase):
+    def test_riscv_sources_unchanged(self):
+        ks = [
+            sched_probe("load", 2),
+            sched_probe("add", 3, pre="mul", m=2),
+            sched_probe("fp", 2),
+            sched_probe("store", 2, pre="load", m=1),
+            sched_probe("mul", 4),
+            retire_drain(3),
+            dispatch_probe(2, 2),
+            dispatch_probe(3, 1, x="mul", y="add"),
+            nop_stream(2),
+            from_window(window_probe("nop", 2)),
+        ]
+        self.assertEqual(_md5(multi_source("t", ks)), "6c51885014d7404bb3508654656eafda")
+        self.assertEqual(
+            _md5(c_source(sched_probe("store", 2, pre="mul", m=1))), "58469629b5e88e077b3ed839a331dbff"
+        )
+
+    def test_spellings(self):
+        self.assertEqual(
+            sched_probe("add", 2, isa=A64).params["asm"],
+            [
+                "ldr %0, [%0]",
+                "add x9, %0, x6",
+                "add x10, %0, x6",
+                "ldr %1, [%1]",
+                "add x9, %1, x6",
+                "add x10, %1, x6",
+            ],
+        )
+        self.assertEqual(sched_probe("mul", 1, isa=A64).params["asm"][1], "mul x9, %0, x7")
+        self.assertEqual(sched_probe("fp", 1, isa=A64).params["asm"][1], "fmov d16, %0")
+        asm = sched_probe("load", 8, isa=A64).params["asm"]
+        self.assertEqual(asm[1:3], ["lsr x21, %0, #63", "add x21, x21, %3"])
+        self.assertEqual(asm[12:14], ["lsr x22, %1, #63", "add x22, x22, %3"])
+        self.assertEqual(len({ln.split("#")[1] for ln in asm[3:11]}), 8)  # 8 distinct scratch slots
+        self.assertTrue(
+            all(
+                ln.startswith("str x6, [x22, #") for ln in sched_probe("store", 2, isa=A64).params["asm"][-2:]
+            )
+        )
+        asm = retire_drain(3, links=2, exhaust=2, isa=A64).params["asm"]
+        self.assertEqual(asm, ["fsqrt d24, d24"] * 2 + ["nop"] * 3 + ["add x9, x6, x7", "add x10, x6, x7"])
+        self.assertEqual(
+            dispatch_probe(1, 1, isa=A64).params["asm"], ["add x9, x6, x7", "fadd d16, d30, d31"]
+        )
+        self.assertEqual(
+            from_window(window_probe("nop", 1), A64).params["asm"],
+            ["ldr %0, [%0]", "nop", "ldr %1, [%1]", "nop"],
+        )
+
+    def test_m1_register_rules(self):
+        """Every register the loop names is written before the loop and clobbered; no adr/adrp,
+        x18, x29, x30 or sp; the window emitter's head is kept."""
+        em = ASM_EMITTERS[A64]
+        head = em.loop_head()
+        self.assertEqual(head[: len(AArch64().loop_head()) - 2], AArch64().loop_head()[:-2])
+        self.assertEqual(head[-2:], [".p2align 6", "1:"])
+        written = set()
+        for ln in head:
+            if ln.split()[0] in ("mov", "movz", "movk", "scvtf", "fmov"):
+                written |= _regs(ln.split(",")[0])
+        clob = set().union(*(_regs(c) for c in em.clobbers))
+        for k in a64_kernels():
+            body = em.lower(k)[len(head) :]
+            used = set().union(*(_regs(ln) for ln in body)) - {("x", 31)}
+            self.assertLessEqual(used, written, k.name)
+            self.assertLessEqual(used, clob, k.name)
+            text = "\n".join(em.lower(k))
+            self.assertNotRegex(text, r"\badrp?\b")
+            for r in ("x18", "w18", "x29", "x30", "sp"):
+                self.assertNotRegex(text, rf"\b{r}\b")
+
+    def test_isas_do_not_mix(self):
+        with self.assertRaises(ValueError):
+            multi_source("t", [sched_probe("add", 1), sched_probe("add", 1, isa=A64)])
+
+    def test_chain_lines_are_128_bytes(self):
+        from sched_common import run_multi
+
+        with self.assertRaises(ValueError):  # 300 nodes of 128 B: wraps before any compile
+            run_multi("t", [sched_probe("add", 1, isa=A64)], iters=100, reps=3, chain_bytes=128 * 300)
+
+    @unittest.skipUnless(shutil.which("aarch64-linux-gnu-gcc"), "needs the AArch64 cross compiler")
+    def test_cross_compiles(self):
+        flags = ["-O1", "-march=armv8-a"]
+        for src in (
+            multi_source("t", a64_kernels()),
+            multi_source("t", a64_kernels(), em=A64AsmEmitter("cntvct")),
+            c_source(sched_probe("store", 2, pre="mul", m=1, isa=A64)),
+        ):
+            r = _compile(src, "aarch64-linux-gnu-gcc", flags)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+
 class TestGem5Helpers(unittest.TestCase):
+    def test_arm_command(self):
+        from sched_common import _cmd
+
+        tail = _cmd("/k", [1, 2], {"numIQEntries": 16}, [], "aarch64")
+        self.assertTrue(tail[0].endswith("arm_config_o3.py"))
+        self.assertEqual(tail[1:3], ["--isa", "arm"])
+        tail = _cmd("/k", [1, 2], {}, [])
+        self.assertTrue(tail[0].endswith(os.sep + "config_o3.py"))
+        self.assertEqual(tail[1:3], ["--isa", "riscv"])
+
+    def test_arm_op_classes(self):
+        """gem5 ARM: the fp filler (fmov d, x) is FloatMisc, which the FP_MultDiv units take."""
+        from sched_common import expected_knee
+
+        fp_alu_only = [(36, {"FloatAdd", "FloatCmp", "FloatCvt"})]
+        fp_queue = [(36, {"FloatAdd", "FloatCmp", "FloatCvt", "FloatMisc", "FloatSqrt"})]
+        self.assertEqual(expected_knee(fp_alu_only, "fp"), 36)
+        self.assertEqual(expected_knee(fp_alu_only, "fp", isa="aarch64"), 0)
+        self.assertEqual(expected_knee(fp_queue, "fp", isa="aarch64"), 36)
+
     def test_iq_set(self):
         from sched_common import iq_set
 

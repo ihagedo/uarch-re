@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P3.9 fetch-to-decode queue depth on gem5 O3 (RISC-V).
+"""P3.9 fetch-to-decode queue depth on gem5 O3 (RISC-V; ARM: --isa aarch64).
 
 fetchq_source(B): an fsqrt chain stalls the backend, a CSR read serializes rename, then
 B NOPs and a jump to a line that misses in L1i and L2; the miss is hidden while the
 frontend holds all B NOPs. The knee counts all buffering before rename: knee = Q + C,
 C estimated leave-one-out. Three stall lengths check that the knee does not depend on it.
 
-  . tools/env.sh && python3 validation/gem5/fp_fetchq.py [--analyze]
+  . tools/env.sh && python3 validation/gem5/fp_fetchq.py [--analyze] [--isa aarch64]
 """
 
 import argparse
@@ -30,15 +30,18 @@ CHAINS = [10, 12, 14]
 MAXB = 112
 STEP = 8
 PACK, STRIDE = 16, 64 << 10  # 16 B values per binary; landing lines 64 KiB apart (one L2 set per value)
+ISA = "riscv64"
+ARM_OUT, ARM_SIZES = os.path.join(RESULTS, "arm-fp-fetchq"), [16, 32, 64]
 
 
 def run_one(job):
     """One gem5 run: up to 8 B values for one (Q, chain)."""
     q, chain, bs = job
     pts, od = run_points(
-        fetchq_source(list(bs), chain=chain, stride=STRIDE),
+        fetchq_source(list(bs), chain=chain, stride=STRIDE, isa=ISA),
         f"fp_fq_c{chain}",
         sets=[f"cpu.fetchQueueSize={q}"],
+        isa=ISA,
     )
     took = int(config_value(od, "system.cpu", "fetchQueueSize"))
     misses = g5.stat(od, "system.cpu.icache.overallMisses::total")
@@ -89,7 +92,7 @@ def campaign():
         for c in CHAINS:
             k = knee_of([r for r in raw if r["q"] == q and r["chain"] == c])
             if k.knee is None:
-                log("fp-fetchq", f"Q={q} chain={c}: no coarse knee ({k.anomaly})")
+                log(os.path.basename(OUT), f"Q={q} chain={c}: no coarse knee ({k.anomaly})")
                 continue
             fine += [(q, c, b) for b in range(int(k.knee) + 1, int(k.knee) + STEP)]
     fine = sorted(set(fine) - {(r["q"], r["chain"], r["b"]) for r in raw})
@@ -149,19 +152,23 @@ def analyze(raw):
 
 
 def main():
+    global ISA, OUT, SIZES
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze", action="store_true")
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     a = ap.parse_args()
+    if a.isa == "aarch64":
+        ISA, OUT, SIZES = a.isa, ARM_OUT, ARM_SIZES
     raw = load_json(os.path.join(OUT, "raw.json")) if a.analyze else campaign()
     summ = analyze(raw)
     save_json(os.path.join(OUT, "summary.json"), summ)
     log(
-        "fp-fetchq",
+        os.path.basename(OUT),
         f"slope {summ['slope']:.3f} intercept {summ['intercept']:.2f} offset(all) {summ['offset_all']}",
     )
     for s in summ["points"]:
         log(
-            "fp-fetchq",
+            os.path.basename(OUT),
             f"Q={s['q']:3d} knee={s['knee']} ci={s['ci']} per-chain={s['knee_per_chain']} "
             f"C_loo={s['offset_loo']:.1f} detected={s['detected']:.1f} err={s['error']:.1f} "
             f"pass={s['pass']} jump={s['jump_ratio']:.2f}",

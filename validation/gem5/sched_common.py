@@ -1,6 +1,7 @@
 """gem5 driver for the P1.5 (scheduler) and P1.7 (retire) campaigns.
 
-Runs raw-asm kernels under config_o3.py like gem5.run_gem5_binary, plus a timeout
+Runs raw-asm kernels under config_o3.py (AArch64 kernels: arm_config_o3.py on the ARM build)
+like gem5.run_gem5_binary, plus a timeout
 (a layout that leaves an op class without a capable queue hangs dispatch), a result
 cache in results/gem5/sched-cache/, and ground truth read back from config.ini.
 `expected_knee` and `hockey` are the P1.5 reference model and pairing fit.
@@ -20,7 +21,7 @@ sys.path.insert(0, ROOT)
 from uarchre.backends.platform import gem5 as g5
 from uarchre.backends.isa_base import emit_c, run_args, parse_output
 from uarchre.backends.platform.native import EMITTERS, compile_kernel
-from uarchre.kernels.scheduler import EMITTER, multi_source, parse_multi, chain_nodes_needed
+from uarchre.kernels.scheduler import ASM_EMITTERS, kernel_isa, multi_source, parse_multi, chain_nodes_needed
 
 CACHE = os.path.join(ROOT, "results", "gem5", "sched-cache")
 OUTROOT = os.path.join(ROOT, "build", "gem5out", "sched")
@@ -48,8 +49,8 @@ def iq_set(queues, misc=True):
     return "cpu.instQueues=[" + ", ".join(items) + "]"
 
 
-def _cmd(binpath, argv, params, sets):
-    tail = [g5.CONFIG, "--isa", "riscv", "--cmd", binpath, "--args", " ".join(map(str, argv))]
+def _cmd(binpath, argv, params, sets, isa="riscv64"):
+    tail = [g5.CONFIGS[isa], "--isa", g5.GEM5_ISA[isa], "--cmd", binpath, "--args", " ".join(map(str, argv))]
     for k, v in (params or {}).items():
         tail += [f"--{k}", str(v)]
     for s in sets:
@@ -68,18 +69,22 @@ def run(
     timeout=1200,
     source=None,
     want_outdir=False,
+    isa="riscv64",
 ):
-    """One gem5 launch of a raw-asm kernel (or a window Kernel with source="window").
+    """One gem5 launch of a raw-asm kernel (or a window Kernel with source="window", built
+    for `isa`; raw-asm kernels carry their ISA).
 
     Returns a RunResult, or (RunResult, outdir) with want_outdir."""
     if source == "window":
-        em = EMITTERS["riscv64"]
-        binpath = compile_kernel(kernel, "riscv64", cc=g5.CROSS, cflags=g5.CFLAGS, static=True)
+        em = EMITTERS[isa]
+        cc, cflags = g5.TOOLCHAIN[isa]
+        binpath = compile_kernel(kernel, isa, cc=cc, cflags=cflags, static=True)
     else:
-        em = EMITTER
-        binpath = g5.compile_c(emit_c(kernel, em), kernel.name)
+        isa = kernel_isa([kernel])
+        em = ASM_EMITTERS[isa]
+        binpath = g5.compile_c(emit_c(kernel, em), kernel.name, isa)
     argv = run_args(em, kernel, chain_bytes, iters, reps, 0, seed)
-    tail = _cmd(binpath, argv, params, sets)
+    tail = _cmd(binpath, argv, params, sets, isa)
     key = hashlib.md5(json.dumps([os.path.basename(binpath)] + tail[1:]).encode()).hexdigest()[:16]
     os.makedirs(CACHE, exist_ok=True)
     cpath = os.path.join(CACHE, key + ".out")
@@ -95,7 +100,7 @@ def run(
             "taskset",
             "-c",
             g5.CPUS,
-            g5.GEM5["riscv64"],
+            g5.GEM5[isa],
             "-q",
             "--outdir",
             outdir,
@@ -132,14 +137,17 @@ def run(
 def run_multi(
     name, kernels, params=None, sets=(), iters=60, reps=3, chain_bytes=1 << 20, seed=0, timeout=3600
 ):
-    """One gem5 launch timing every kernel in turn (kernels/scheduler.py multi_source).
+    """One gem5 launch timing every kernel in turn (kernels/scheduler.py multi_source); the
+    kernels' ISA picks the gem5 build.
 
     Returns ({point index: [cycles per rep]}, outdir)."""
+    isa = kernel_isa(kernels)
+    line = ASM_EMITTERS[isa].line
     need = chain_nodes_needed(kernels, iters, reps)
-    if need >= chain_bytes // EMITTER.line:
-        raise ValueError(f"{name}: {need} chase nodes would wrap a {chain_bytes // EMITTER.line}-node chain")
-    binpath = g5.compile_c(multi_source(name, kernels), name)
-    tail = _cmd(binpath, [chain_bytes, iters, reps, seed], params, sets)
+    if need >= chain_bytes // line:
+        raise ValueError(f"{name}: {need} chase nodes would wrap a {chain_bytes // line}-node chain")
+    binpath = g5.compile_c(multi_source(name, kernels), name, isa)
+    tail = _cmd(binpath, [chain_bytes, iters, reps, seed], params, sets, isa)
     key = hashlib.md5(json.dumps([os.path.basename(binpath)] + tail[1:]).encode()).hexdigest()[:16]
     os.makedirs(CACHE, exist_ok=True)
     cpath = os.path.join(CACHE, key + ".out")
@@ -155,7 +163,7 @@ def run_multi(
             "taskset",
             "-c",
             g5.CPUS,
-            g5.GEM5["riscv64"],
+            g5.GEM5[isa],
             "-q",
             "--outdir",
             outdir,
@@ -249,10 +257,12 @@ def class_capacity(truth, op_class):
 
 # probe filler class -> gem5 op class
 OPCLASS = {"add": "IntAlu", "mul": "IntMult", "fp": "FloatCvt", "load": "MemRead", "store": "MemWrite"}
+# gem5 ARM: fmov d, x is FloatMisc (FP_MultDiv); the queue layouts above cover it unchanged
+OPCLASSES = {"riscv64": OPCLASS, "aarch64": {**OPCLASS, "fp": "FloatMisc"}}
 MEMORY = ("load", "store")
 
 
-def expected_knee(queues, filler, pre=None, m=0, resident_misses=2):
+def expected_knee(queues, filler, pre=None, m=0, resident_misses=2, isa="riscv64"):
     """Entries left for the filler's class once the miss loads, memory-op address
     helpers and m preload ops are placed, each in the first capable queue of
     `queues` [(size, op classes)] with room."""
@@ -265,12 +275,13 @@ def expected_knee(queues, filler, pre=None, m=0, resident_misses=2):
                     free[i] -= 1
                     break
 
+    opc = OPCLASSES[isa]
     place("MemRead", resident_misses)
     if filler in MEMORY or pre in MEMORY:
         place("IntAlu", 2)
     if pre:
-        place(OPCLASS[pre], m)
-    return sum(free[i] for i, (_, ops) in enumerate(queues) if OPCLASS[filler] in ops)
+        place(opc[pre], m)
+    return sum(free[i] for i, (_, ops) in enumerate(queues) if opc[filler] in ops)
 
 
 def hockey(ms, knees):

@@ -1,8 +1,9 @@
 """P2 memory probes, a bare-metal TLB probe (P2.2) and a memory-dependence probe (P2.5).
 
 `chase_source(isa)` is one C program for every user-mode probe; argv[1] picks the mode (usage above
-its main()). Times are counter ticks (rdcycle on RISC-V/gem5, rdtscp on x86, where the program also
-prints tsc_hz and clock_ratio for conversion).
+its main()). Times are counter ticks: rdcycle on RISC-V/gem5, rdtscp on x86, and on AArch64 one of
+aarch64.COUNTERS (pmccntr under gem5, cntvct or mach on hardware). Off gem5 the program also prints
+the tick rate (tsc_hz, counter_hz) and clock_ratio (ticks per core cycle) for conversion.
 """
 
 import re
@@ -12,6 +13,11 @@ UNROLL = 16
 MLP_FP_CHAINS = 31  # f0..f30 hold chains, f31 is the round-trip scratch
 MLP_INT_CHAINS = 24  # t1-t6, a0-a7, s1-s10 hold chains; s11 counts; t0 scratch
 MLP_KMAX = MLP_FP_CHAINS + MLP_INT_CHAINS
+# AArch64: d0-d30 hold chains, d31 is the round-trip scratch; x0 = ctx, x1 counts, x2 scratch;
+# x3-x17 and x19-x28 hold chains (never x18, x29, x30)
+MLP_A64_FP = 31
+MLP_A64_INT = [f"x{i}" for i in [*range(3, 18), *range(19, 29)]]
+MLP_A64_KMAX = MLP_A64_FP + len(MLP_A64_INT)
 MLP_INT_REGS = [
     "t1",
     "t2",
@@ -54,11 +60,7 @@ _COMMON = r"""
 @CYCLES@
 
 #define UNROLL @UNROLL@
-#ifdef __x86_64__
-#define WARM_CAP 4000000ULL    /* native: up to 2 full passes, cheap */
-#else
-#define WARM_CAP 20000ULL      /* gem5: simulated loads are expensive */
-#endif
+@WARM_CAP@
 
 static uint64_t rs = 88172645463325252ULL;
 static inline uint64_t xs(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -203,7 +205,7 @@ static double clock_ratio(void) {
 }
 #endif
 
-#define LINE 64
+#define LINE @LINE@
 @TEMPLATE_CHAIN@
 #undef LINE
 
@@ -214,9 +216,9 @@ static double clock_ratio(void) {
      indep <stride> <nloads> <reps> <pages> F...                   independent strided loads
      pair <slot> <nloads> <reps> <F> D...                          X -> X+D -> next slot (per pair)
      conflict <S> <nloads> <reps> <pages> K...                     K random nodes S bytes apart
-     page <nloads> <reps> <pages> <dense> P...                     a node per 4 KiB page; dense=1 packs
+     page <nloads> <reps> <pages> <dense> P...                     a node per @PAGE@ page; dense=1 packs
      wchain <F> <nloads> <reps> <m5>                               the window probe's chains: A, A+B
-     mlp <F> <iters> <reps> <seed> [x=<bytes>] K...                K chains per iteration (riscv64)
+@MLP_USAGE@
    "w=<loads>" caps warm-up for the footprints after it (default 2 passes). <pages> (x86): 0 = 4 KiB
    aligned like the window template, 1 = MADV_NOHUGEPAGE, 2 = 2 MiB aligned + MADV_HUGEPAGE. */
 int main(int argc, char **argv) {
@@ -316,13 +318,13 @@ int main(int argc, char **argv) {
         for (int a = 6; a < argc; a++) {
             if (warm_token(argv[a])) continue;
             size_t P = parse(argv[a]);
-            size_t bytes = dense ? P * 64 : P * 4096;
-            char *buf = alloc(bytes + 4096, pages);
+            size_t bytes = dense ? P * @LN@ : P * @PG@;
+            char *buf = alloc(bytes + @PG@, pages);
             size_t *off = malloc(P * sizeof(size_t));
             /* line in page i: (i + i/64) mod 64 -- every prefix spreads over the
                64 L1 sets, and with the page's low 3 bits it reaches all 512 sets
                of a 32 KiB-span L2 (plain i mod 64 would hit only 64 of them) */
-            for (size_t i = 0; i < P; i++) off[i] = dense ? i * 64 : i * 4096 + ((i + i / 64) % 64) * 64;
+            for (size_t i = 0; i < P; i++) off[i] = dense ? i * @LN@ : i * @PG@ + ((i + i / @LPP@) % @LPP@) * @LN@;
             size_t *perm = cyclic(P, 0x99 + P);
             link_nodes(buf, off, perm, P);
             void *p = buf + off[perm[0]];
@@ -362,13 +364,13 @@ int main(int argc, char **argv) {
         if (m5) M5_DUMP();
     } else if (!strcmp(mode, "mlp")) {
         return mlp_main(argc, argv);
-    } else {
+@MODES@    } else {
         fprintf(stderr, "unknown mode %s\n", mode);
         return 2;
     }
     return 0;
 }
-"""
+"""  # noqa: E501
 
 
 def _asm(lines):
@@ -414,6 +416,77 @@ static void *chase2(void *p, void **q) {
 """
 
 
+_X86_RISCV = {  # pieces riscv64 and x86_64 share
+    "@WARM_CAP@": """#ifdef __x86_64__
+#define WARM_CAP 4000000ULL    /* native: up to 2 full passes, cheap */
+#else
+#define WARM_CAP 20000ULL      /* gem5: simulated loads are expensive */
+#endif""",
+    "@LINE@": "64",
+    "@PG@": "4096",
+    "@LN@": "64",
+    "@LPP@": "64",
+    "@PAGE@": "4 KiB",
+    "@MLP_USAGE@": "     mlp <F> <iters> <reps> <seed> [x=<bytes>] K...                "
+    "K chains per iteration (riscv64)",
+    "@MODES@": "",
+}
+
+_MLP_MAIN = r"""
+/* mlp <F> <iters> <reps> <seed> K1 K2 ...: one random cyclic chain over F bytes;
+   the K chains start N/K nodes apart along it, so they never meet while
+   (warm + reps) * iters < N/K */
+static int mlp_main(int argc, char **argv) {
+    size_t F = parse(argv[2]);
+    uint64_t iters = parse(argv[3]);
+    int reps = atoi(argv[4]);
+@NODE_ARG@    size_t nodes = F / @NODE@;
+    char *buf = alloc(F + @NODE@, 0);
+    size_t *perm = cyclic(nodes, 0x4242 + 7919 * parse(argv[5]));
+    for (size_t i = 0; i < nodes; i++)
+        *(void **)(buf + perm[i] * @NODE@) = buf + perm[(i + 1) % nodes] * @NODE@;
+    uint64_t ctx[1 + @KMAX@];
+    /* "x=<bytes>": evict the freshly written (dirty) chain by reading a
+       separate buffer that large, then read the chain back, so it sits in the
+       cache hierarchy clean: dirty victims would make every miss also a
+       writeback, and the L1D write buffers (not its MSHRs) would then bind */
+    for (int a = 6; a < argc; a++) {
+        if (strncmp(argv[a], "x=", 2)) continue;
+        size_t xb = strtoull(argv[a] + 2, 0, 0);
+        char *fb = alloc(xb, 0);
+        volatile uint64_t sink = 0;
+        for (size_t o = 0; o < xb; o += @NODE@) sink += *(volatile uint64_t *)(fb + o);
+        for (size_t o = 0; o < F; o += @NODE@) sink += *(volatile uint64_t *)(buf + o);
+        (void)sink;
+    }
+    for (int a = 6; a < argc; a++) {
+        if (argv[a][0] == 'x') continue;
+        int K = atoi(argv[a]);
+        if (K < 1 || K > @KMAX@) continue;
+        if ((reps + 1) * iters >= nodes / K) { fprintf(stderr, "mlp: K=%d wraps\n", K); continue; }
+        /* chain j starts j*N/K nodes along the cycle */
+        size_t gap = nodes / K;
+        for (int j = 0; j < K; j++) ctx[1 + j] = (uint64_t)(buf + perm[(size_t)j * gap] * @NODE@);
+        ctx[0] = iters;                     /* warm-up pass, same length */
+        MLP_FN[K](ctx);
+        double *v = malloc(reps * sizeof(double));
+        for (int r = 0; r < reps; r++) {
+            ctx[0] = iters;
+            uint64_t t0 = cycles();
+            MLP_FN[K](ctx);
+            uint64_t t1 = cycles();
+            v[r] = (double)(t1 - t0) / (double)iters;
+        }
+        for (int r = 0; r < reps; r++) printf("R mlp %d %d %.4f\n", K, r, v[r]);
+        fflush(stdout);
+        free(v);
+    }
+    free(perm);
+    return 0;
+}
+"""
+
+
 def _mlp_riscv():
     """One function per K: K chains advanced once per iteration."""
     fns, table = [], []
@@ -450,62 +523,190 @@ def _mlp_riscv():
         )
         table.append(f"mlp_{k}")
     fns.append(f"static void (*const MLP_FN[{MLP_KMAX + 1}])(uint64_t *) = {{0, {', '.join(table)}}};")
+    fns.append(_MLP_MAIN.replace("@KMAX@", str(MLP_KMAX)).replace("@NODE_ARG@", "").replace("@NODE@", "64"))
+    return "\n".join(fns)
+
+
+def _mlp_aarch64():
+    """_mlp_riscv on AArch64: ctx pinned to x0, x1 counts; a chain step is fmov, ldr, fmov either way."""
+    fns, table = [], []
+    for k in range(1, MLP_A64_KMAX + 1):
+        body = ["ldr x1, [%0]"]
+        for j in range(k):
+            r = f"d{j}" if j < MLP_A64_FP else MLP_A64_INT[j - MLP_A64_FP]
+            body.append(f"ldr {r}, [%0, #{8 * (j + 1)}]")
+        body += ["mov x2, x1", "fmov d31, x1", "cmp x1, x2", ".p2align 6", "1:"]  # claim scratch and NZCV
+        for j in range(k):
+            if j < MLP_A64_FP:
+                body += [f"fmov x2, d{j}", "ldr x2, [x2]", f"fmov d{j}, x2"]
+            else:
+                r = MLP_A64_INT[j - MLP_A64_FP]
+                body += [f"fmov d31, {r}", f"fmov {r}, d31", f"ldr {r}, [{r}]"]
+        body += ["subs x1, x1, #1", "b.ne 1b"]
+        for j in range(k):
+            r = f"d{j}" if j < MLP_A64_FP else MLP_A64_INT[j - MLP_A64_FP]
+            body.append(f"str {r}, [%0, #{8 * (j + 1)}]")
+        clob = ["x1", "x2"] + MLP_A64_INT + [f"v{i}" for i in range(32)]
+        clob_s = ", ".join(f'"{c}"' for c in clob)
+        fns.append(
+            f'static void mlp_{k}(uint64_t *ctx) {{\n    register uint64_t *c __asm__("x0") = ctx;\n'
+            f"    __asm__ __volatile__(\n{_asm(body)}\n"
+            f'        :: "r"(c) : "memory", "cc", {clob_s});\n}}'
+        )
+        table.append(f"mlp_{k}")
+    fns.append(f"static void (*const MLP_FN[{MLP_A64_KMAX + 1}])(uint64_t *) = {{0, {', '.join(table)}}};")
+    node_arg = (
+        "    size_t node = 128;                  /* one node per 128 B line; n=<bytes> overrides */\n"
+        '    for (int a = 6; a < argc; a++) if (!strncmp(argv[a], "n=", 2)) node = parse(argv[a] + 2);\n'
+    )
     fns.append(
-        r"""
-/* mlp <F> <iters> <reps> <seed> K1 K2 ...: one random cyclic chain over F bytes;
-   the K chains start N/K nodes apart along it, so they never meet while
-   (warm + reps) * iters < N/K */
-static int mlp_main(int argc, char **argv) {
-    size_t F = parse(argv[2]);
-    uint64_t iters = parse(argv[3]);
-    int reps = atoi(argv[4]);
-    size_t nodes = F / 64;
-    char *buf = alloc(F + 64, 0);
-    size_t *perm = cyclic(nodes, 0x4242 + 7919 * parse(argv[5]));
-    for (size_t i = 0; i < nodes; i++)
-        *(void **)(buf + perm[i] * 64) = buf + perm[(i + 1) % nodes] * 64;
-    uint64_t ctx[1 + @KMAX@];
-    /* "x=<bytes>": evict the freshly written (dirty) chain by reading a
-       separate buffer that large, then read the chain back, so it sits in the
-       cache hierarchy clean: dirty victims would make every miss also a
-       writeback, and the L1D write buffers (not its MSHRs) would then bind */
-    for (int a = 6; a < argc; a++) {
-        if (strncmp(argv[a], "x=", 2)) continue;
-        size_t xb = strtoull(argv[a] + 2, 0, 0);
-        char *fb = alloc(xb, 0);
-        volatile uint64_t sink = 0;
-        for (size_t o = 0; o < xb; o += 64) sink += *(volatile uint64_t *)(fb + o);
-        for (size_t o = 0; o < F; o += 64) sink += *(volatile uint64_t *)(buf + o);
-        (void)sink;
+        _MLP_MAIN.replace("@KMAX@", str(MLP_A64_KMAX))
+        .replace("@NODE_ARG@", node_arg)
+        .replace("@NODE@", "node")
+    )
+    return "\n".join(fns)
+
+
+_A64_CYCLES = r"""
+#include <sys/mman.h>
+#include <unistd.h>
+@COUNTER@
+#define PAGE_BYTES ((size_t)sysconf(_SC_PAGESIZE))
+@GEM5@
+static void *chase2(void *p, void **q) {
+    void *b = *q;
+    __asm__ __volatile__(
+@CHASE2@
+        : "+r"(p), "+r"(b) :: "memory");
+    *q = b;
+    return p;
+}
+@CLOCK@
+"""
+
+_A64_GEM5 = r"""/* gem5 pseudo-ops (0xff000110 | func << 16): 0x40 reset_stats, 0x41 dump_stats; x0 = delay, x1 = period */
+#define M5_RESET() __asm__ __volatile__("mov x0, #0\n\tmov x1, #0\n\t.long 0xff400110" ::: "x0", "x1", "memory")
+#define M5_DUMP()  __asm__ __volatile__("mov x0, #0\n\tmov x1, #0\n\t.long 0xff410110" ::: "x0", "x1", "memory")
+/* gem5 SE traps EL0 cache maintenance (SCTLR_EL1.UCI clear); its L1I snoops the L1D anyway */
+#define SYNC_ICACHE(a, b)"""  # noqa: E501
+
+_A64_HW = """#define M5_RESET()
+#define M5_DUMP()
+#define SYNC_ICACHE(a, b) __builtin___clear_cache(a, b)"""
+
+_A64_CLOCK = r"""/* counter ticks per dependent reg-reg add (= per core cycle), best of 3 */
+__attribute__((constructor)) static void uarchre_clock_ratio(void) {
+    double best = 0;
+    for (int r = 0; r < 3; r++) {
+        uint64_t x = 0x5bd1e9955bd1e995ULL, n = 1 << 16;
+        uint64_t t0 = cycles();
+        __asm__ __volatile__(
+@ADDS@
+            : "+r"(x), "+r"(n) :: "cc");
+        uint64_t t1 = cycles();
+        __asm__ __volatile__("" :: "r"(x));
+        double v = (double)(t1 - t0) / (double)((1 << 16) * 64);
+        if (r == 0 || v < best) best = v;
     }
-    for (int a = 6; a < argc; a++) {
-        if (argv[a][0] == 'x') continue;
-        int K = atoi(argv[a]);
-        if (K < 1 || K > @KMAX@) continue;
-        if ((reps + 1) * iters >= nodes / K) { fprintf(stderr, "mlp: K=%d wraps\n", K); continue; }
-        /* chain j starts j*N/K nodes along the cycle */
-        size_t gap = nodes / K;
-        for (int j = 0; j < K; j++) ctx[1 + j] = (uint64_t)(buf + perm[(size_t)j * gap] * 64);
-        ctx[0] = iters;                     /* warm-up pass, same length */
-        MLP_FN[K](ctx);
+    printf("clock_ratio %.4f\n", best);
+}"""
+
+_A64_CODE = r"""
+/* code <njumps> <reps> P...: a 4-instruction stub in each of P code pages (line rotated as in
+   `page`), in random cyclic order; a stub counts x0 down, returns at 0, else branches to the next */
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#include <pthread.h>
+#endif
+static uint32_t *stub(char *code, size_t i) {
+    size_t lpp = PAGE_BYTES / 128;
+    return (uint32_t *)(code + i * PAGE_BYTES + ((i + i / lpp) % lpp) * 128);
+}
+static int code_main(int argc, char **argv) {
+    uint64_t njumps = parse(argv[2]);
+    int reps = atoi(argv[3]);
+    size_t pmax = 2;
+    for (int a = 4; a < argc; a++) if (parse(argv[a]) > pmax) pmax = parse(argv[a]);
+    size_t bytes = pmax * PAGE_BYTES;
+    if (bytes > (120u << 20)) { fprintf(stderr, "code: b reaches +-128 MiB\n"); return 2; }
+    int flags = MAP_PRIVATE | MAP_ANON;
+#ifdef __APPLE__
+    flags |= MAP_JIT;
+#endif
+    char *code = mmap(0, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
+    if (code == MAP_FAILED) { perror("mmap"); return 1; }
+    for (int a = 4; a < argc; a++) {
+        size_t P = parse(argv[a]);
+        if (P < 2) continue;
+        size_t *perm = cyclic(P, 0x5151 + P);
+#ifdef __APPLE__
+        pthread_jit_write_protect_np(0);
+#endif
+        for (size_t i = 0; i < P; i++) {
+            uint32_t *s = stub(code, perm[i]), *t = stub(code, perm[(i + 1) % P]);
+            s[0] = 0xf1000400u;                                         /* subs x0, x0, #1 */
+            s[1] = 0x54000041u;                                         /* b.ne +8 */
+            s[2] = 0xd65f03c0u;                                         /* ret */
+            s[3] = 0x14000000u | (uint32_t)((t - (s + 3)) & 0x3ffffff);  /* b t */
+        }
+#ifdef __APPLE__
+        pthread_jit_write_protect_np(1);
+        sys_icache_invalidate(code, bytes);
+#else
+        SYNC_ICACHE(code, code + bytes);
+#endif
+        uint64_t (*entry)(uint64_t) = (uint64_t (*)(uint64_t))(void *)stub(code, perm[0]);
+        free(perm);
+        entry(2 * P + 64);
         double *v = malloc(reps * sizeof(double));
         for (int r = 0; r < reps; r++) {
-            ctx[0] = iters;
             uint64_t t0 = cycles();
-            MLP_FN[K](ctx);
+            entry(njumps);
             uint64_t t1 = cycles();
-            v[r] = (double)(t1 - t0) / (double)iters;
+            v[r] = (double)(t1 - t0) / (double)njumps;
         }
-        for (int r = 0; r < reps; r++) printf("R mlp %d %d %.4f\n", K, r, v[r]);
+        for (int r = 0; r < reps; r++) printf("R code %zu %d %.4f\n", P, r, v[r]);
         fflush(stdout);
         free(v);
     }
-    free(perm);
     return 0;
 }
-""".replace("@KMAX@", str(MLP_KMAX))
-    )
-    return "\n".join(fns)
+"""
+
+
+_A64 = {  # 128 B lines and the OS page size (16 KiB on Apple silicon); the code mode
+    "@LINE@": "128",
+    "@PG@": "PAGE_BYTES",
+    "@LN@": "128",
+    "@LPP@": "(PAGE_BYTES / 128)",
+    "@PAGE@": "OS",
+    "@MLP_USAGE@": "     mlp <F> <iters> <reps> <seed> [x=<bytes>] [n=<bytes>] K...    "
+    "K chains, n-byte nodes (128)\n"
+    "     code <njumps> <reps> P...                                    a jump chain over P code pages",
+    "@MODES@": '    } else if (!strcmp(mode, "code")) {\n        return code_main(argc, argv);\n',
+}
+_A64_WARM = {
+    True: "#define WARM_CAP 20000ULL      /* gem5: simulated loads are expensive */",
+    False: "#define WARM_CAP 4000000ULL    /* native: up to 2 full passes, cheap */",
+}
+
+
+def _a64_cycles(counter, chase2):
+    from ..backends.isa.aarch64 import COUNTERS
+
+    if counter not in COUNTERS:
+        raise ValueError(f"counter must be one of {sorted(COUNTERS)}")
+    gem5 = counter == "pmccntr"
+    adds = ["cmp %0, %1", "1:"] + ["add %0, %0, %1"] * 64 + ["subs %1, %1, #1", "b.ne 1b"]
+    src = _A64_CYCLES
+    for k, v in {
+        "@COUNTER@": COUNTERS[counter].strip("\n"),
+        "@GEM5@": _A64_GEM5 if gem5 else _A64_HW,  # gem5 pseudo-ops are undefined on hardware
+        "@CHASE2@": chase2,
+        "@CLOCK@": "" if gem5 else _A64_CLOCK.replace("@ADDS@", _asm(adds)),
+    }.items():
+        src = src.replace(k, v)
+    return src
 
 
 def template_chain_c() -> str:
@@ -518,7 +719,9 @@ def template_chain_c() -> str:
     return m.group(0).replace("{{", "{").replace("}}", "}")
 
 
-def chase_source(isa="riscv64") -> str:
+def chase_source(isa="riscv64", counter="pmccntr") -> str:
+    """`counter` (aarch64 only): a key of aarch64.COUNTERS."""
+    sub = dict(_X86_RISCV)
     if isa == "riscv64":
         chase = ["1:"] + ["ld %0, 0(%0)"] * UNROLL + ["addi %1, %1, -1", "bnez %1, 1b"]
         chase2 = ["ld %0, 0(%0)", "ld %1, 0(%1)"] * (UNROLL // 2)
@@ -542,6 +745,17 @@ def chase_source(isa="riscv64") -> str:
         )
         indep_clob = ', "r8"'
         probe = _asm(["addq %1, %0"] * 64)
+    elif isa == "aarch64":
+        chase = ["cmp %0, %1", "1:"] + ["ldr %0, [%0]"] * UNROLL + ["subs %1, %1, #1", "b.ne 1b"]
+        chase2 = ["ldr %0, [%0]", "ldr %1, [%1]"] * (UNROLL // 2)
+        indep = ["mov x9, %1"]
+        for _ in range(UNROLL):
+            indep += ["ldr x10, [x9]", "add %0, %0, x10", "add x9, x9, %2"]
+        cyc = _a64_cycles(counter, _asm(chase2))
+        mlp = _mlp_aarch64() + _A64_CODE
+        indep_clob = ', "x9", "x10"'
+        probe = ""
+        sub = {**_A64, "@WARM_CAP@": _A64_WARM[counter == "pmccntr"]}
     else:
         raise ValueError(isa)
     src = _COMMON
@@ -554,6 +768,7 @@ def chase_source(isa="riscv64") -> str:
         "@PROBE@": probe,
         "@MLP@": mlp,
         "@TEMPLATE_CHAIN@": template_chain_c(),
+        **sub,
     }.items():
         src = src.replace(k, v)
     return src
@@ -564,11 +779,11 @@ def chase_source(isa="riscv64") -> str:
 
 def parse_runs(out: str):
     """{tag: {key: [values per rep]}} from the program's 'R' lines, plus a
-    dict of scalars (tsc_hz, clock_ratio) when present."""
+    dict of scalars (tsc_hz, clock_ratio, counter_hz) when present."""
     res = defaultdict(lambda: defaultdict(list))
     for m in re.finditer(r"^R (\S+) (\d+) \d+ ([\d.]+)$", out, re.M):
         res[m.group(1)][int(m.group(2))].append(float(m.group(3)))
-    sc = {k: float(v) for k, v in re.findall(r"^(tsc_hz|clock_ratio) ([\d.]+)$", out, re.M)}
+    sc = {k: float(v) for k, v in re.findall(r"^(tsc_hz|clock_ratio|counter_hz) ([\d.]+)$", out, re.M)}
     return {k: dict(v) for k, v in res.items()}, sc
 
 
@@ -576,22 +791,22 @@ def parse_runs(out: str):
 
 
 def binary(isa="riscv64"):
-    """Compile (cached by content hash) and return the binary path."""
-    if isa == "riscv64":
+    """Compile (cached by content hash) and return the binary path; riscv64 and aarch64 for gem5."""
+    if isa in ("riscv64", "aarch64"):
         from ..backends.platform.gem5 import compile_c
 
-        return compile_c(chase_source("riscv64"), "memprobe", isa="riscv64")
+        return compile_c(chase_source(isa), "memprobe", isa=isa)
     from ..backends.platform.native import compile_source
 
     return compile_source(chase_source("x86_64"), "memprobe", "x86_64", cflags=("-O1",))
 
 
-def run_gem5(argv, params=None, sets=(), check=True):
+def run_gem5(argv, params=None, sets=(), check=True, isa="riscv64"):
     """Run the probe under gem5 O3; returns (runs, scalars, outdir)."""
     from ..backends.platform.gem5 import run_gem5_binary
 
     out, outdir = run_gem5_binary(
-        binary("riscv64"), [str(a) for a in argv], params or {}, list(sets), check=check
+        binary(isa), [str(a) for a in argv], params or {}, list(sets), isa=isa, check=check
     )
     runs, sc = parse_runs(out)
     if not runs:
@@ -886,7 +1101,7 @@ def run_gem5_fs(elf, sets=(), tag="tlb"):
 
 
 # ------------------------------------------------ memory dependence probe (P2.5)
-# riscv64 / gem5 SE. A load that runs ahead of its aliasing store squashes until the store-set
+# gem5 SE, riscv64 or aarch64. A load that runs ahead of its aliasing store squashes until the store-set
 # predictor (SSIT, direct mapped on PC/4) pairs them; N 4-instruction blocks overflow it at SSITSize/4.
 
 MEMDEP_NMAX = 384
@@ -919,39 +1134,61 @@ def _memdep_fn(n, alias=True):
     )
 
 
-def memdep_source(ns, alias=True):
-    """C source: `memdep <iters> <reps> N...` prints "R memdep N rep cycles_per_block",
-    `fwd <n> <reps>` "R fwd 0 rep cycles_per_round_trip" (an sd a0; ld a0 chain)."""
-    fns = [_memdep_fn(n, alias) for n in ns]
+def _memdep_fn_a64(n, alias=True):
+    """_memdep_fn on AArch64: udiv x9 (x8 = 1); str x12, [x9, off_j]; ldr x14 from slot j or 8 KiB
+    above it (x11); nop. One base reaches every slot (scaled imm12)."""
+    from ..backends.isa.aarch64 import SRC_A, _mov64
+
+    body = ["mov x10, %0", "add x11, x10, #8192", "mov x8, #1", *_mov64("x12", SRC_A), "mov x13, %1"]
+    body += ["mov x9, x10", "mov x14, x12", "cmp x13, x8", ".p2align 6", "1:"]  # claim x9, x14, NZCV
+    for j in range(n):
+        lbase = "x10" if alias else "x11"
+        body += ["udiv x9, x10, x8", f"str x12, [x9, #{16 * j}]", f"ldr x14, [{lbase}, #{16 * j}]", "nop"]
+    body += ["subs x13, x13, #1", "b.ne 1b"]
     tag = "a" if alias else "n"
-    table = ", ".join(f"{{{n}, md{tag}_{n}}}" for n in ns)
+    clob = ", ".join(f'"x{i}"' for i in range(8, 15))
     return (
-        r"""
+        f"static void md{tag}_{n}(char *buf, uint64_t iters) {{\n    __asm__ __volatile__(\n{_asm(body)}\n"
+        f'        :: "r"(buf), "r"(iters) : "memory", "cc", {clob});\n}}'
+    )
+
+
+_MD_HEAD = r"""
 /* generated by uarchre/kernels/memory.py: P2.5 memory-dependence probe */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static inline uint64_t cycles(void) { uint64_t c; __asm__ __volatile__("rdcycle %0" : "=r"(c) :: "memory"); return c; }
-"""  # noqa: E501
-        + "\n".join(fns)
-        + f"""
-static const struct {{ int n; void (*fn)(char *, uint64_t); }} MD[] = {{ {table} }};
-#define NMD (sizeof(MD) / sizeof(MD[0]))
-
-/* store-to-load round trip: sd a0, 0(p); ld a0, 0(p) (dependent through memory) */
-static void fwd(char *p, uint64_t n) {{
-    __asm__ __volatile__(
-        ".option push\\n\\t.option norvc\\n\\t"
-        "li a0, 1\\n\\t"
-        "1:\\n\\t"
 """
-        + "".join('        "sd a0, 0(%0)\\n\\t" "ld a0, 0(%0)\\n\\t"\n' for _ in range(8))
-        + r"""        "addi %1, %1, -1\n\t" "bnez %1, 1b\n\t"
+
+_MD_FWD = {
+    "riscv64": r"""/* store-to-load round trip: sd a0, 0(p); ld a0, 0(p) (dependent through memory) */
+static void fwd(char *p, uint64_t n) {
+    __asm__ __volatile__(
+        ".option push\n\t.option norvc\n\t"
+        "li a0, 1\n\t"
+        "1:\n\t"
+"""
+    + '        "sd a0, 0(%0)\\n\\t" "ld a0, 0(%0)\\n\\t"\n' * 8
+    + r"""        "addi %1, %1, -1\n\t" "bnez %1, 1b\n\t"
         ".option pop\n\t"
         : "+r"(p), "+r"(n) :: "memory", "a0");
 }
+""",
+    "aarch64": r"""/* store-to-load round trip: str x9, [p]; ldr x9, [p] (dependent through memory) */
+static void fwd(char *p, uint64_t n) {
+    __asm__ __volatile__(
+        "mov x9, #1\n\t" "cmp x9, %1\n\t"
+        "1:\n\t"
+"""
+    + '        "str x9, [%0]\\n\\t" "ldr x9, [%0]\\n\\t"\n' * 8
+    + r"""        "subs %1, %1, #1\n\t" "b.ne 1b\n\t"
+        : "+r"(p), "+r"(n) :: "memory", "cc", "x9");
+}
+""",
+}
 
+_MD_MAIN = r"""
 int main(int argc, char **argv) {
     static char buf[16384] __attribute__((aligned(4096)));     /* slots < 6 KiB, + 8 KiB no-alias copy */
     memset(buf, 0, sizeof buf);
@@ -984,12 +1221,42 @@ int main(int argc, char **argv) {
     return 0;
 }
 """
+
+
+def memdep_source(ns, alias=True, isa="riscv64", counter="pmccntr"):
+    """C source: `memdep <iters> <reps> N...` prints "R memdep N rep cycles_per_block",
+    `fwd <n> <reps>` "R fwd 0 rep cycles_per_round_trip" (a store; load chain through one address).
+    `counter` (aarch64 only): a key of aarch64.COUNTERS."""
+    if isa == "riscv64":
+        cyc = r"""static inline uint64_t cycles(void) { uint64_t c; __asm__ __volatile__("rdcycle %0" : "=r"(c) :: "memory"); return c; }
+"""  # noqa: E501
+        fns = [_memdep_fn(n, alias) for n in ns]
+    elif isa == "aarch64":
+        from ..backends.isa.aarch64 import COUNTERS
+
+        cyc = COUNTERS[counter].lstrip("\n")
+        fns = [_memdep_fn_a64(n, alias) for n in ns]
+    else:
+        raise ValueError(isa)
+    tag = "a" if alias else "n"
+    table = ", ".join(f"{{{n}, md{tag}_{n}}}" for n in ns)
+    return (
+        _MD_HEAD
+        + cyc
+        + "\n".join(fns)
+        + f"""
+static const struct {{ int n; void (*fn)(char *, uint64_t); }} MD[] = {{ {table} }};
+#define NMD (sizeof(MD) / sizeof(MD[0]))
+
+"""
+        + _MD_FWD[isa]
+        + _MD_MAIN
     )
 
 
-def memdep_binary(ns, alias=True):
+def memdep_binary(ns, alias=True, isa="riscv64"):
     from ..backends.platform.gem5 import compile_c
 
     if max(ns) > MEMDEP_NMAX:
         raise ValueError(f"N up to {MEMDEP_NMAX}")
-    return compile_c(memdep_source(ns, alias), f"memdep_{'a' if alias else 'n'}", isa="riscv64")
+    return compile_c(memdep_source(ns, alias, isa), f"memdep_{'a' if alias else 'n'}", isa=isa)

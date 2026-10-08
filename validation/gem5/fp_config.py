@@ -1,8 +1,8 @@
 """config_o3.py plus a FetchDirectedPrefetcher on the I-cache (P3.8).
 
 The prefetcher needs registerMMU/registerCache calls that `--set` cannot make, so
-this runs config_o3.py unchanged and adds them just before m5.instantiate().
-Without --fdp it is config_o3.py.
+this runs config_o3.py (with --isa arm: arm_config_o3.py) unchanged and adds them
+just before m5.instantiate(). Without --fdp it is that config.
 
   gem5.opt fp_config.py [--fdp] [--fdp-snoop 0|1] --cmd ./kernel ... --set cpu.decoupledFrontEnd=True
 """
@@ -14,7 +14,8 @@ import m5
 import m5.objects
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG = os.path.join(HERE, "config_o3.py")
+isa = sys.argv[sys.argv.index("--isa") + 1] if "--isa" in sys.argv else "riscv"
+CONFIG = os.path.join(HERE, "arm_config_o3.py" if isa == "arm" else "config_o3.py")
 
 fdp = "--fdp" in sys.argv
 snoop = True
@@ -31,7 +32,7 @@ _instantiate = m5.instantiate
 
 def _hook(*a, **k):
     if fdp:
-        system = g["system"]
+        system = m5.objects.Root.getInstance().system  # arm_config_o3.py hides config_o3.py's globals
         cpu, icache = system.cpu, system.cpu.icache
         pf = m5.objects.FetchDirectedPrefetcher(use_virtual_addresses=True, cpu=cpu, cache_snoop=snoop)
         pf.registerCache(icache)

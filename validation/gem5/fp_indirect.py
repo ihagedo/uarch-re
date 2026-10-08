@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P3.5 indirect-predictor capacity on gem5 O3 (RISC-V).
+"""P3.5 indirect-predictor capacity on gem5 O3 (RISC-V; ARM: --isa aarch64).
 
 indirect_source: S indirect call sites per round, each target rotating through T leaves,
 so the run needs S*T entries; once they no longer fit each site costs about one more
 mispredict. Capacity = last S on the low segment of the marginal cost, times T. Truth:
 indirectSets x indirectWays; one config keeps the default instShiftAmt=0 (every 4th set).
 
-  . tools/env.sh && python3 validation/gem5/fp_indirect.py [--analyze]
+  . tools/env.sh && python3 validation/gem5/fp_indirect.py [--analyze] [--isa aarch64]
 """
 
 import argparse
@@ -32,6 +32,8 @@ CONFIGS = [
     (256, 2, 2, 2),
     (128, 2, 1, 0),
 ]
+ISA = "riscv64"
+ARM_OUT, ARM_CONFIGS = os.path.join(RESULTS, "arm-fp-indirect"), CONFIGS[:3]
 
 
 def cfg_sets(sets, ways, shift):
@@ -46,9 +48,10 @@ def run_sizes(cfg, sizes, phase, rounds=8, reps=2):
     sets, ways, t, shift = cfg
     smax = max(sizes)
     pts, od = run_points(
-        indirect_source(smax, sorted(sizes), targets=t, rounds=rounds, reps=reps),
+        indirect_source(smax, sorted(sizes), targets=t, rounds=rounds, reps=reps, isa=ISA),
         f"fp_ind_{phase}_T{t}",
         sets=cfg_sets(sets, ways, shift),
+        isa=ISA,
     )
     took = (
         config_value(od, "system.cpu.branchPred.indirectBranchPred", "indirectSets"),
@@ -109,7 +112,7 @@ def campaign():
         T = merged(raw, cfg)
         k, _ = knee_cfg(T)
         if k.knee is None:
-            log("fp-indirect", f"{cfg}: no coarse knee")
+            log(os.path.basename(OUT), f"{cfg}: no coarse knee")
             continue
         ss = sorted(T)
         i = ss.index(int(k.knee))
@@ -181,15 +184,19 @@ def analyze(raw):
 
 
 def main():
+    global ISA, OUT, CONFIGS
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze", action="store_true")
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     a = ap.parse_args()
+    if a.isa == "aarch64":
+        ISA, OUT, CONFIGS = a.isa, ARM_OUT, ARM_CONFIGS
     raw = load_json(os.path.join(OUT, "raw.json")) if a.analyze else campaign()
     summ = analyze(raw)
     save_json(os.path.join(OUT, "summary.json"), summ)
     for s in summ:
         log(
-            "fp-indirect",
+            os.path.basename(OUT),
             f"sets={s['sets']} ways={s['ways']} T={s['targets']} shift={s['instShiftAmt']} "
             f"truth={s['truth']} knee_sites={s['knee_sites']} detected={s['detected']} ci={s['ci']} "
             f"pass={s['pass']} jump={s['jump_ratio']:.2f}",

@@ -6,17 +6,16 @@ stays out of the penalty). Random data mispredicts ~half, 0xAAAA... none: penalt
 (cycles per branch, random - pattern) / 0.5. One redirect-loop delay is swept at a time;
 the penalty should follow it 1:1. Time buffers are 12 entries (5 caps delays at 4).
 
-    . tools/env.sh && python3 validation/gem5/fe_mispredict.py
+    . tools/env.sh && python3 validation/gem5/fe_mispredict.py [--isa aarch64]
 """
 
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fe_common import RESULTS, run_fe, pmap, config_value, write_json, med
-from uarchre.kernels.frontend import random_branches
+from fe_common import run_fe, pmap, config_value, write_json, med, pop_isa, out_dir
+from uarchre.kernels.frontend import random_branches, SPELLING
 
-OUT = os.path.join(RESULTS, "fe-mispredict")
 WORDS = 512
 SEEDS = (0, 1, 2)
 COM = ["cpu.forwardComSize=12", "cpu.backComSize=12"]
@@ -25,6 +24,7 @@ SWEEPS = {
     "decodeToRenameDelay": [1, 2, 3, 4, 6, 8],
     "renameToIEWDelay": [2, 3, 4, 6, 8],
 }
+ARM_SWEEPS = {"decodeToRenameDelay": [1, 3, 6]}  # --isa aarch64: a reduced sweep
 # delays on the redirect loop at their defaults (BaseO3CPU.py)
 LOOP = {
     "fetchToDecodeDelay": 1,
@@ -41,10 +41,12 @@ STATS = [
 ]
 
 
-def main():
-    k = random_branches(WORDS)
+def main(argv=()):
+    isa, _ = pop_isa(argv)
+    sweeps = SWEEPS if isa == "riscv64" else ARM_SWEEPS
+    k = random_branches(WORDS, isa=SPELLING[isa])
     jobs = []
-    for delay, vals in SWEEPS.items():
+    for delay, vals in sweeps.items():
         for v in vals:
             for mode, seed in [(2, 0)] + [(1, s) for s in SEEDS]:
                 jobs.append((delay, v, mode, seed))
@@ -71,10 +73,10 @@ def main():
         )
 
     rows = pmap(one, jobs, log=log)
-    write_json(os.path.join(OUT, "raw.json"), rows)
+    write_json(os.path.join(out_dir("fe-mispredict", isa), "raw.json"), rows)
 
     summary = []
-    for delay, vals in SWEEPS.items():
+    for delay, vals in sweeps.items():
         for v in vals:
             pat = [r for r in rows if r["delay"] == delay and r["value"] == v and r["mode"] == 2][0]
             rnd = [r for r in rows if r["delay"] == delay and r["value"] == v and r["mode"] == 1]
@@ -104,8 +106,8 @@ def main():
                 f"{med(stat_pen):.2f}  mispredict rate {med(rate):.3f}  loop delays {loop}",
                 flush=True,
             )
-    write_json(os.path.join(OUT, "summary.json"), summary)
+    write_json(os.path.join(out_dir("fe-mispredict", isa), "summary.json"), summary)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

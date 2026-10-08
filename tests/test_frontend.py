@@ -3,10 +3,15 @@
 python3 -m unittest tests.test_frontend
 """
 
+import ast
+import hashlib
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -82,6 +87,125 @@ class TestKernels(unittest.TestCase):
     def test_parse_reps(self):
         out = "rep 0 cycles 100 instret 50\nrep 1 cycles 90 instret 50\ngem5 exit\n"
         self.assertEqual(fe.parse_reps(out), [(100, 50), (90, 50)])
+        self.assertEqual(fe.parse_reps("counter_hz 1\nrep 0 cycles 7\n"), [(7, None)])
+
+    def test_riscv_sources_unchanged(self):
+        ks = []
+        for f in ("nop", "mix"):
+            ks += [fe.width_loop(L, filler=f) for L in range(2, 17)]
+            ks += [fe.straight_nops(64 * n, filler=f) for n in (64, 257, 1000, 4096)]
+        ks += [fe.jump_chain(n, s) for n in (32, 513, 4097, 12288) for s in (0, 1, 2)]
+        ks += [fe.random_branches(w) for w in (2, 512)]
+        src = "".join(fe.harness_c(k) for k in ks)
+        self.assertEqual(hashlib.md5(src.encode()).hexdigest(), "ba2ba593b4775fb0decc59d54006f2c0")
+
+
+def a64_kernels():
+    A = fe.A64
+    return [
+        fe.width_loop(16, filler="mix", isa=A),
+        fe.width_loop(5, isa=A),
+        fe.straight_nops(64 * 40, isa=A),
+        fe.straight_nops(4096, filler="nop", isa=A),
+        fe.jump_chain(300, 1, isa=A),
+        fe.random_branches(4, isa=A),
+    ]
+
+
+class TestAArch64(unittest.TestCase):
+    REG = re.compile(r"\b([xwdsvq])(\d+)\b")
+
+    def regs(self, text):
+        return {("x" if c in "xw" else "v", int(n)) for c, n in self.REG.findall(text)}
+
+    def test_layouts(self):
+        A = fe.A64
+        k = fe.width_loop(16, filler="mix", isa=A)
+        body = [ln for ln in k.asm.splitlines() if not ln.endswith(":") and not ln.startswith(".")]
+        self.assertEqual(len(body), 16)
+        self.assertEqual(k.asm.count("fadd d"), 7)
+        self.assertEqual(body[-2:], ["sub x0, x0, #1", "cbnz x0, 1b"])
+        k = fe.straight_nops(32768, isa=A)
+        self.assertEqual(k.params["insts"] * 4, 32768)
+        self.assertIn("cbz x0, 9b", k.asm)
+        self.assertEqual(k.asm.splitlines()[-2], "b 1b")  # large laps close with b
+        k = fe.jump_chain(50, seed=1, isa=A)
+        self.assertEqual(len(re.findall(r"^b (Lfej\d+|5b)$", k.asm, re.M)), 50)
+        self.assertEqual(len(re.findall(r"^Lfej\d+:$", k.asm, re.M)), 50)
+        k = fe.random_branches(words=2, isa=A)
+        self.assertEqual(k.asm.count("cbz x6, 1f"), 64)
+        self.assertEqual((k.units_per_lap, k.data_words, k.isa), (128, 9, "aarch64"))
+
+    def test_m1_register_rules(self):
+        """The claim block writes every register a kernel names (x0, x1 are the arguments) and
+        NZCV; no adr/adrp, x18, x29, x30 or callee-saved registers."""
+        claim = fe._a64_claim()
+        self.assertEqual(claim[-1], "cmp x6, x7")
+        written = set().union(*(self.regs(ln.split(",")[0]) for ln in claim))
+        for k in a64_kernels():
+            used = self.regs(k.asm)
+            self.assertLessEqual(used - {("x", 0), ("x", 1)}, written, k.name)
+            text = k.asm + "\n".join(claim)
+            self.assertNotRegex(text, r"\badrp?\b|\b[xw](18|29|30)\b|\bsp\b")
+            self.assertFalse({r for r in self.regs(text) if 19 <= r[1] <= 28 and r[0] == "x"}, k.name)
+            self.assertFalse({r for r in self.regs(text) if 8 <= r[1] <= 15 and r[0] == "v"}, k.name)
+
+    def test_harness_counters(self):
+        k = fe.random_branches(4, isa=fe.A64)
+        src = fe.harness_c(k)
+        self.assertIn("pmccntr_el0", src)
+        self.assertIn("pmevcntr0_el0", src)
+        self.assertIn(" instret %llu", src)
+        self.assertIn("kern(laps, data + (size_t)r * 4u);", src)
+        self.assertIn('#define KERN "_kern"', src)  # Mach-O symbol
+        src = fe.harness_c(k, counter="mach")
+        self.assertIn("mach_absolute_time", src)
+        self.assertNotIn("pmevcntr0_el0", src)
+        self.assertNotIn("instret", src)
+
+    @unittest.skipUnless(
+        shutil.which("aarch64-linux-gnu-gcc"), "needs the AArch64 cross compiler (. tools/env.sh)"
+    )
+    def test_cross_compiles(self):
+        from uarchre.backends.platform.gem5 import TOOLCHAIN
+
+        cc, cflags = TOOLCHAIN["aarch64"]
+        with tempfile.TemporaryDirectory() as d:
+            for k in a64_kernels():
+                for counter in ("pmccntr", "cntvct"):
+                    c = os.path.join(d, f"{k.name}_{counter}.c")
+                    with open(c, "w") as fh:
+                        fh.write(fe.harness_c(k, counter))
+                    subprocess.run([cc, *cflags, "-static", c, "-o", c[:-2]], check=True)
+
+    @unittest.skipUnless(
+        shutil.which("aarch64-linux-gnu-cpp") and (shutil.which("llvm-mc") or shutil.which("llvm-mc-19")),
+        "needs the AArch64 cross preprocessor and llvm-mc",
+    )
+    def test_macho_assembles(self):
+        """The kernel asm as clang on macOS sees it (__APPLE__) assembles for arm64-apple-macos."""
+        mc = shutil.which("llvm-mc") or shutil.which("llvm-mc-19")
+        with tempfile.TemporaryDirectory() as d:
+            for k in a64_kernels():
+                pp = subprocess.run(
+                    ["aarch64-linux-gnu-cpp", "-D__APPLE__", "-P"],
+                    input=fe.harness_c(k, "cntvct"),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+                block = re.search(r"__asm__\((.*?)\);", pp, re.S).group(1)
+                asm = "".join(ast.literal_eval(s) for s in re.findall(r'"(?:[^"\\]|\\.)*"', block))
+                self.assertIn("_kern:", asm)
+                s = os.path.join(d, "k.s")
+                with open(s, "w") as fh:
+                    fh.write(asm)
+                r = subprocess.run(
+                    [mc, "-triple=arm64-apple-macos11", "-filetype=obj", s, "-o", s + ".o"],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(r.returncode, 0, f"{k.name}: {r.stderr[:500]}")
 
 
 class TestEstimators(unittest.TestCase):

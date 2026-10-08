@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""P1.5 on gem5 O3 (RISC-V): scheduler queues, queue pairing, dispatch-buffer probe.
+"""P1.5 on gem5 O3 (RISC-V or ARM): scheduler queues, queue pairing, dispatch-buffer probe.
 
 gem5 dispatches in order to the first capable queue with room; memory ops keep their
-entry until they complete. Experiments (results/gem5/sched-p1_5/<name>.json): unified
+entry until they complete. Experiments (results/gem5/[arm-]sched-p1_5/<name>.json): unified
 (one queue, Q = 16..96), queues (paired layouts in LAYOUTS), sharing (m class-X ops
 preloaded before the Y fillers) and dispatch (Handley's probe, S adds then M fadds).
 
-    validation/gem5/sched_p1_5.py unified queues sharing dispatch --jobs 12
+    validation/gem5/sched_p1_5.py unified queues sharing dispatch --jobs 12 [--isa aarch64]
 """
 
 import argparse
@@ -21,9 +21,10 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from sched_common import ROOT, run_multi, config_truth, iq_set
-from uarchre.kernels.scheduler import sched_probe, dispatch_probe, CLASSES
+from uarchre.kernels.scheduler import sched_probe, dispatch_probe, CLASSES, ASM_EMITTERS
 
 OUT = os.path.join(ROOT, "results", "gem5", "sched-p1_5")
+ISA = "riscv64"
 BASE = {
     "numROBEntries": 512,
     "numPhysIntRegs": 512,
@@ -80,14 +81,14 @@ def pmap(f, xs):
 def chain_for(npoints, chase=1):
     need = npoints * ITERS * REPS * chase * 2  # 2x margin: visited nodes stay far from the chain size
     b = 1 << 20
-    while b // 64 < need:
+    while b // ASM_EMITTERS[ISA].line < need:
         b <<= 1
     return b
 
 
 def curve(name, filler, ns, params, sets, seed, pre=None, m=0):
     """One gem5 launch: the scheduler probe at every N in `ns`."""
-    ks = [sched_probe(filler, n, pre, m) for n in ns]
+    ks = [sched_probe(filler, n, pre, m, ISA) for n in ns]
     with GATE:
         res, outdir = run_multi(f"p15_{name}", ks, params, sets, ITERS, REPS, chain_for(len(ns)), seed)
     vals = {n: warm(res[i]) for i, n in enumerate(ns)}
@@ -166,7 +167,7 @@ def split_layout(q_int):
 def exp_dispatch():
     def one(args):
         q, sat = args
-        ks = [dispatch_probe(sat, m) for m in DISPATCH_M]
+        ks = [dispatch_probe(sat, m, isa=ISA) for m in DISPATCH_M]
         name = f"p15_disp_q{q}" + ("" if sat == 160 else f"_s{sat}")
         with GATE:
             res, outdir = run_multi(name, ks, BASE, [split_layout(q)], 100, REPS, 256 << 10, 0)
@@ -192,14 +193,31 @@ def exp_dispatch():
 
 EXPS = {"unified": exp_unified, "queues": exp_queues, "sharing": exp_sharing, "dispatch": exp_dispatch}
 
+# --isa aarch64 validates the AArch64 kernels: three sizes, layout P2, the add->mul hinge, one seed
+ARM_UNIFIED = [16, 32, 64]
+ARM_LAYOUTS = {"P2": LAYOUTS["P2"]}
+ARM_SHARING = [("P2", "add", "mul", [0, 8, 16, 20, 24, 28, 32])]
+ARM_DISPATCH_Q = [16, 32, 48]
+
 
 def main():
-    global GATE
+    global GATE, ISA, OUT, BASE, UNIFIED, LAYOUTS, SHARING, DISPATCH_Q, SEEDS
     ap = argparse.ArgumentParser()
     ap.add_argument("exps", nargs="+", choices=list(EXPS))
     ap.add_argument("--jobs", type=int, default=12)
+    ap.add_argument("--isa", choices=["riscv64", "aarch64"], default="riscv64")
     args = ap.parse_args()
     GATE = threading.BoundedSemaphore(args.jobs)
+    if args.isa == "aarch64":
+        ISA, OUT = "aarch64", os.path.join(ROOT, "results", "gem5", "arm-sched-p1_5")
+        BASE = {**BASE, "numPhysVecRegs": 512}  # ARM scalar FP renames into the vector pool
+        UNIFIED, LAYOUTS, SHARING, DISPATCH_Q, SEEDS = (
+            ARM_UNIFIED,
+            ARM_LAYOUTS,
+            ARM_SHARING,
+            ARM_DISPATCH_Q,
+            (0,),
+        )
     os.makedirs(OUT, exist_ok=True)
 
     def one(name):

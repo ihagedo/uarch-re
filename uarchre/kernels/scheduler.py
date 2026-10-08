@@ -1,14 +1,15 @@
-"""P1.5 scheduler-queue and P1.7 retire-bandwidth probes (RISC-V, raw asm).
+"""P1.5 scheduler-queue and P1.7 retire-bandwidth probes (RISC-V and AArch64, raw asm).
 
-Each kernel carries its RV64GC loop body in `params["asm"]`, lowered by `AsmEmitter` through the shared
-C harness (%0/%1 chase chains, %2 loop counter, %3 128 B scratch; t0 = 1, t1 = 2, ft8-ft11 = 2, 2, 1, 2).
-P1.5: per chain a miss, then N fillers that depend on it; the B miss overlaps A's only while A's
-fillers fit in their queue, so the knee reads that queue. P1.7 (Handley): D x fsqrt.d blocks the ROB
-head, K nops complete, then E adds need more int registers than the headroom, so cycles/iter grow
-with slope 1 / retire width in K.
+A kernel's loop body is `params["asm"]` for `params["isa"]`, lowered by that ISA's `AsmEmitter` through
+the shared C harness (%0/%1 chase chains, %2 loop counter, %3 128 B scratch; RISC-V t0 = 1, t1 = 2,
+ft8-ft11 = 2, 2, 1, 2; AArch64 as isa/aarch64.py plus address helpers x21/x22). P1.5: per chain a
+miss, then N fillers that depend on it; the B miss overlaps A's only while A's fillers fit in their
+queue, so the knee reads that queue. P1.7 (Handley): D x fsqrt blocks the ROB head, K nops complete,
+then E adds need more int registers than the headroom, so cycles/iter grow with slope 1 / retire width.
 """
 
 from . import Kernel
+from ..backends.isa.aarch64 import AArch64, INT_ROT, FP_ROT, OFFSETS
 from ..backends.isa.riscv64 import RISCV64
 from ..backends.isa_base import emit_c
 
@@ -27,6 +28,41 @@ CLASSES = {
 }
 MEMORY = ("load", "store")
 
+A64_HELPER = ["x21", "x22"]
+A64_CLASSES = {  # gem5 ARM op classes: scalar FP is Float*, not Simd*
+    "add": ("IntAlu", "add {r}, {g}, x6"),
+    "mul": ("IntMult", "mul {r}, {g}, x7"),
+    "fp": ("FloatMisc", "fmov {f}, {g}"),
+    "load": ("MemRead", "ldr {r}, [{h}, #{o}]"),
+    "store": ("MemWrite", "str x6, [{h}, #{o}]"),
+}
+
+# per-ISA spellings; "addr" makes the scratch address depend on the miss (a chase pointer has bit 63 clear)
+SPELL = {
+    "riscv64": {
+        "int": INT_DEST,
+        "fp": FP_DEST,
+        "helper": HELPER,
+        "offsets": [8 * i for i in range(16)],
+        "classes": CLASSES,
+        "miss": "ld %{g}, 0(%{g})",
+        "addr": ["andi {h}, %{g}, 0", "add {h}, {h}, %3"],
+        "indep": {"add": "add {r}, t0, t1", "fp": "fadd.d {f}, ft10, ft11", "mul": "mul {r}, t0, t1"},
+        "delay": "fsqrt.d ft8, ft8",
+    },
+    "aarch64": {
+        "int": INT_ROT,
+        "fp": FP_ROT,
+        "helper": A64_HELPER,
+        "offsets": OFFSETS,
+        "classes": A64_CLASSES,
+        "miss": "ldr %{g}, [%{g}]",
+        "addr": ["lsr {h}, %{g}, #63", "add {h}, {h}, %3"],
+        "indep": {"add": "add {r}, x6, x7", "fp": "fadd {f}, d30, d31", "mul": "mul {r}, x6, x7"},
+        "delay": "fsqrt d24, d24",
+    },
+}
+
 
 class AsmEmitter(RISCV64):
     """RISCV64 harness whose loop body is the kernel's raw asm lines."""
@@ -37,65 +73,101 @@ class AsmEmitter(RISCV64):
         return list(self.loop_head()) + list(k.params["asm"]) + list(self.loop_tail())
 
 
+class A64AsmEmitter(AArch64):
+    """AArch64 harness (M1 register claims, `counter` from COUNTERS) around the raw asm lines."""
+
+    name = "aarch64-asm"
+    clobbers = AArch64.clobbers + A64_HELPER
+
+    def loop_head(self):
+        head = super().loop_head()
+        return head[:-2] + [f"mov {h}, x6" for h in A64_HELPER] + head[-2:]
+
+    def lower(self, k):
+        return list(self.loop_head()) + list(k.params["asm"]) + list(self.loop_tail())
+
+
 EMITTER = AsmEmitter()
 EMITTER_STD = RISCV64()
+ASM_EMITTERS = {"riscv64": EMITTER, "aarch64": A64AsmEmitter()}
+STD_EMITTERS = {"riscv64": EMITTER_STD, "aarch64": AArch64()}
 
 
-def asm_kernel(name, lines, depth=1, **params):
-    return Kernel(name=name, body=[], n_chains=2, params={"asm": list(lines), "depth": depth, **params})
+def kernel_isa(kernels):
+    isas = {k.params.get("isa", "riscv64") for k in kernels}
+    if len(isas) != 1:
+        raise ValueError(f"kernels mix ISAs: {sorted(isas)}")
+    return isas.pop()
 
 
-def c_source(kernel, **overrides):
-    return emit_c(kernel, EMITTER, **overrides)
-
-
-def dep_op(cls, i, group):
-    """The i-th filler of class `cls` that depends on miss group 0 (A) or 1 (B)."""
-    _, tmpl = CLASSES[cls]
-    return tmpl.format(r=INT_DEST[i % 8], f=FP_DEST[i % 8], g=f"%{group}", h=HELPER[group], o=8 * (i % 16))
-
-
-def sched_probe(filler, n, pre=None, m=0):
-    """N fillers of class `filler` per miss group after m ops of class `pre`, all dependent on the miss."""
-    lines = []
-    for g in (0, 1):
-        lines.append(f"ld %{g}, 0(%{g})")
-        if filler in MEMORY or pre in MEMORY:  # same overhead at every m of a sharing test
-            lines += [f"andi {HELPER[g]}, %{g}, 0", f"add {HELPER[g]}, {HELPER[g]}, %3"]
-        lines += [dep_op(pre, i, g) for i in range(m)] if pre else []
-        lines += [dep_op(filler, m + i, g) for i in range(n)]
-    tag = f"_{pre}{m}" if pre and m else ""
-    return asm_kernel(f"sched_{filler}{tag}_{n}", lines, filler=filler, n=n, pre=pre, m=m)
-
-
-def dispatch_probe(sat, m, x="add", y="fp"):
-    """Handley's dispatch-buffer probe without a delay: `sat` independent class-x ops (enough
-    to fill x's queue), then m independent class-y ops, which are free if they use another queue."""
-    indep = {"add": "add {r}, t0, t1", "fp": "fadd.d {f}, ft10, ft11", "mul": "mul {r}, t0, t1"}
-    lines = [indep[x].format(r=INT_DEST[i % 8], f=FP_DEST[i % 8]) for i in range(sat)]
-    lines += [indep[y].format(r=INT_DEST[i % 8], f=FP_DEST[i % 8]) for i in range(m)]
-    return asm_kernel(f"disp_{x}{sat}_{y}_{m}", lines, depth=0, sat=sat, m=m, x=x, y=y)
-
-
-def from_window(kernel):
-    """A window-probe Kernel (kernels/window.py) as a raw-asm kernel."""
-    lines = EMITTER_STD.lower(kernel)
-    body = lines[len(EMITTER_STD.loop_head()) : len(lines) - len(EMITTER_STD.loop_tail())]
-    return asm_kernel(kernel.name, body, **{"depth": 1, **kernel.params})
-
-
-def retire_drain(k, links=12, exhaust=64):
-    """P1.7: FP delay chain, K NOPs, then `exhaust` int destinations."""
-    lines = ["fsqrt.d ft8, ft8"] * links + ["nop"] * k
-    lines += [f"add {INT_DEST[i % 8]}, t0, t1" for i in range(exhaust)]
-    return asm_kernel(
-        f"retire_drain_l{links}_e{exhaust}_{k}", lines, depth=0, k=k, links=links, exhaust=exhaust
+def asm_kernel(name, lines, depth=1, isa="riscv64", **params):
+    return Kernel(
+        name=name, body=[], n_chains=2, params={"asm": list(lines), "depth": depth, "isa": isa, **params}
     )
 
 
-def nop_stream(k):
+def c_source(kernel, em=None, **overrides):
+    return emit_c(kernel, em or ASM_EMITTERS[kernel_isa([kernel])], **overrides)
+
+
+def dep_op(cls, i, group, isa="riscv64"):
+    """The i-th filler of class `cls` that depends on miss group 0 (A) or 1 (B)."""
+    sp = SPELL[isa]
+    _, tmpl = sp["classes"][cls]
+    return tmpl.format(
+        r=sp["int"][i % 8],
+        f=sp["fp"][i % 8],
+        g=f"%{group}",
+        h=sp["helper"][group],
+        o=sp["offsets"][i % len(sp["offsets"])],
+    )
+
+
+def sched_probe(filler, n, pre=None, m=0, isa="riscv64"):
+    """N fillers of class `filler` per miss group after m ops of class `pre`, all dependent on the miss."""
+    sp = SPELL[isa]
+    lines = []
+    for g in (0, 1):
+        lines.append(sp["miss"].format(g=g))
+        if filler in MEMORY or pre in MEMORY:  # same overhead at every m of a sharing test
+            lines += [ln.format(h=sp["helper"][g], g=g) for ln in sp["addr"]]
+        lines += [dep_op(pre, i, g, isa) for i in range(m)] if pre else []
+        lines += [dep_op(filler, m + i, g, isa) for i in range(n)]
+    tag = f"_{pre}{m}" if pre and m else ""
+    return asm_kernel(f"sched_{filler}{tag}_{n}", lines, isa=isa, filler=filler, n=n, pre=pre, m=m)
+
+
+def dispatch_probe(sat, m, x="add", y="fp", isa="riscv64"):
+    """Handley's dispatch-buffer probe without a delay: `sat` independent class-x ops (enough
+    to fill x's queue), then m independent class-y ops, which are free if they use another queue."""
+    sp = SPELL[isa]
+    indep = sp["indep"]
+    lines = [indep[x].format(r=sp["int"][i % 8], f=sp["fp"][i % 8]) for i in range(sat)]
+    lines += [indep[y].format(r=sp["int"][i % 8], f=sp["fp"][i % 8]) for i in range(m)]
+    return asm_kernel(f"disp_{x}{sat}_{y}_{m}", lines, depth=0, isa=isa, sat=sat, m=m, x=x, y=y)
+
+
+def from_window(kernel, isa="riscv64"):
+    """A window-probe Kernel (kernels/window.py) as a raw-asm kernel."""
+    em = STD_EMITTERS[isa]
+    lines = em.lower(kernel)
+    body = lines[len(em.loop_head()) : len(lines) - len(em.loop_tail())]
+    return asm_kernel(kernel.name, body, **{"depth": 1, **kernel.params, "isa": isa})
+
+
+def retire_drain(k, links=12, exhaust=64, isa="riscv64"):
+    """P1.7: FP delay chain, K NOPs, then `exhaust` int destinations."""
+    sp = SPELL[isa]
+    lines = [sp["delay"]] * links + ["nop"] * k
+    lines += [sp["indep"]["add"].format(r=sp["int"][i % 8]) for i in range(exhaust)]
+    return asm_kernel(
+        f"retire_drain_l{links}_e{exhaust}_{k}", lines, depth=0, isa=isa, k=k, links=links, exhaust=exhaust
+    )
+
+
+def nop_stream(k, isa="riscv64"):
     """Pure throughput: K NOPs per iteration (narrowest pipeline stage)."""
-    return asm_kernel(f"nop_stream_{k}", ["nop"] * k, depth=0, k=k)
+    return asm_kernel(f"nop_stream_{k}", ["nop"] * k, depth=0, isa=isa, k=k)
 
 
 # --------------------------------------------------------------------------- multi-point harness
@@ -182,16 +254,16 @@ def _asm_lines(lines):
     return "\n".join(f'            "{line}\\n\\t"' for line in lines)
 
 
-def multi_source(name, kernels):
-    """C source timing every kernel of `kernels` (raw-asm kernels) in turn."""
-    clob = "".join(f', "{c}"' for c in EMITTER.clobbers)
+def multi_source(name, kernels, em=None):
+    """C source timing every kernel of `kernels` (raw-asm kernels of one ISA) in turn.
+    `em` overrides the emitter, e.g. A64AsmEmitter("mach") on macOS."""
+    em = em or ASM_EMITTERS[kernel_isa(kernels)]
+    clob = "".join(f', "{c}"' for c in em.clobbers)
     parts = [
-        MULTI_HEAD.format(
-            name=name, npoints=len(kernels), cycle_counter=EMITTER.cycle_counter_c, line=EMITTER.line
-        )
+        MULTI_HEAD.format(name=name, npoints=len(kernels), cycle_counter=em.cycle_counter_c, line=em.line)
     ]
     for i, k in enumerate(kernels):
-        parts.append(MULTI_POINT.format(idx=i, asm_body=_asm_lines(EMITTER.lower(k)), clobbers=clob))
+        parts.append(MULTI_POINT.format(idx=i, asm_body=_asm_lines(em.lower(k)), clobbers=clob))
     parts.append(
         MULTI_MAIN.format(names=", ".join(f"point{i}" for i in range(len(kernels))), npoints=len(kernels))
     )
