@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory Conformance</title>
+<style>
+  :root { --bg: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --line: #e1e0d9; --pass: #0ca30c; --fail: #d03b3b; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #161614; --ink: #f2f1ec; --ink2: #c3c2b7; --line: #34332f; --pass: #4cc94c; --fail: #f07272; }
+  }
+  :root[data-theme="dark"] { --bg: #161614; --ink: #f2f1ec; --ink2: #c3c2b7; --line: #34332f; --pass: #4cc94c; --fail: #f07272; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; }
+  #verdict { font-size: 18px; font-weight: 700; }
+  .pass { color: var(--pass); } .fail { color: var(--fail); }
+  pre { white-space: pre-wrap; font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 8px; color: var(--ink2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Conformance: JS engine vs the Python toy model</h1>
+  <div id="verdict">running…</div>
+  <pre id="log"></pre>
+  <p><a href="index.html">back to the factory floor</a></p>
+</main>
+<script type="module">
+  import { runConformance } from "./conformance.js";
+  const log = (m) => { document.getElementById("log").textContent += m + "\n"; };
+  const load = async (p) => { const r = await fetch(p); if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`); return r.text(); };
+  runConformance(load, { log }).then((s) => {
+    const v = document.getElementById("verdict");
+    v.className = s.pass ? "pass" : "fail";
+    v.textContent = `${s.pass ? "PASS" : "FAIL"}: ${s.events.identical.toLocaleString("en-US")} / ${s.events.total.toLocaleString("en-US")} ` +
+      `events identical across ${s.events.kernels} kernels; R10K NOP knee N = ${s.milestone.nopKnee}`;
+    document.body.dataset.result = s.pass ? "pass" : "fail";
+    if (!s.pass) log("\nproblems:\n  " + s.problems.join("\n  "));
+  }).catch((e) => { document.getElementById("verdict").textContent = "error: " + e.message; document.body.dataset.result = "error"; });
+</script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+[
+ {
+  "spec": "r10000",
+  "overrides": {
+   "miss_latency": 200
+  },
+  "result": {
+   "cfg": {
+    "rob": 32,
+    "int_prf": 64,
+    "fp_prf": 64,
+    "lq": 16,
+    "sq": 16,
+    "width": 4,
+    "miss_latency": 200,
+    "load_latency": 2,
+    "alu_latency": 1,
+    "fp_latency": 3,
+    "arch_int": 33,
+    "arch_fp": 32,
+    "alu_delay_latency": 24,
+    "miss_latency_jitter": 0.0,
+    "seed": 0
+   },
+   "prov": {
+    "rob": {
+     "from": "backend.retire.active_list",
+     "provenance": "documented"
+    },
+    "int_prf": {
+     "from": "backend.int_prf",
+     "provenance": "documented"
+    },
+    "fp_prf": {
+     "from": "backend.fp_prf",
+     "provenance": "documented"
+    },
+    "lq": {
+     "from": "backend.queues.address_queue",
+     "provenance": "documented",
+     "note": "shared by loads and stores; modelled as a separate pool of this size each"
+    },
+    "sq": {
+     "from": "backend.queues.address_queue",
+     "provenance": "documented",
+     "note": "shared by loads and stores; modelled as a separate pool of this size each"
+    },
+    "width": {
+     "from": "backend.rename_width",
+     "provenance": "documented"
+    },
+    "miss_latency": {
+     "from": "override",
+     "provenance": null
+    },
+    "load_latency": {
+     "from": "memory.l1d.latency_cycles",
+     "provenance": "documented"
+    },
+    "alu_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "fp_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "arch_int": {
+     "from": "backend.int_prf - backend.int_prf_headroom",
+     "provenance": "documented"
+    },
+    "arch_fp": {
+     "from": "backend.fp_prf - backend.fp_prf_headroom",
+     "provenance": "documented"
+    },
+    "alu_delay_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "miss_latency_jitter": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "seed": {
+     "from": "toy default",
+     "provenance": null
+    }
+   },
+   "assumptions": [
+    "the address queue is shared by loads and stores; the toy models a separate LQ and SQ of that size each, so only single-filler probes are faithful",
+    "one width for dispatch, issue and retire (toy semantics); issue ports and scheduler queues are not modelled"
+   ]
+  }
+ },
+ {
+  "spec": "r10000",
+  "overrides": {},
+  "error": "spec has no memory.dram_latency: pass miss_latency as an override"
+ },
+ {
+  "spec": "r10000",
+  "overrides": {
+   "miss_latency": 300,
+   "rob": 64
+  },
+  "result": {
+   "cfg": {
+    "rob": 64,
+    "int_prf": 64,
+    "fp_prf": 64,
+    "lq": 16,
+    "sq": 16,
+    "width": 4,
+    "miss_latency": 300,
+    "load_latency": 2,
+    "alu_latency": 1,
+    "fp_latency": 3,
+    "arch_int": 33,
+    "arch_fp": 32,
+    "alu_delay_latency": 24,
+    "miss_latency_jitter": 0.0,
+    "seed": 0
+   },
+   "prov": {
+    "rob": {
+     "from": "override",
+     "provenance": null
+    },
+    "int_prf": {
+     "from": "backend.int_prf",
+     "provenance": "documented"
+    },
+    "fp_prf": {
+     "from": "backend.fp_prf",
+     "provenance": "documented"
+    },
+    "lq": {
+     "from": "backend.queues.address_queue",
+     "provenance": "documented",
+     "note": "shared by loads and stores; modelled as a separate pool of this size each"
+    },
+    "sq": {
+     "from": "backend.queues.address_queue",
+     "provenance": "documented",
+     "note": "shared by loads and stores; modelled as a separate pool of this size each"
+    },
+    "width": {
+     "from": "backend.rename_width",
+     "provenance": "documented"
+    },
+    "miss_latency": {
+     "from": "override",
+     "provenance": null
+    },
+    "load_latency": {
+     "from": "memory.l1d.latency_cycles",
+     "provenance": "documented"
+    },
+    "alu_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "fp_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "arch_int": {
+     "from": "backend.int_prf - backend.int_prf_headroom",
+     "provenance": "documented"
+    },
+    "arch_fp": {
+     "from": "backend.fp_prf - backend.fp_prf_headroom",
+     "provenance": "documented"
+    },
+    "alu_delay_latency": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "miss_latency_jitter": {
+     "from": "toy default",
+     "provenance": null
+    },
+    "seed": {
+     "from": "toy default",
+     "provenance": null
+    }
+   },
+   "assumptions": [
+    "the address queue is shared by loads and stores; the toy models a separate LQ and SQ of that size each, so only single-filler probes are faithful",
+    "one width for dispatch, issue and retire (toy semantics); issue ports and scheduler queues are not modelled"
+   ]
+  }
+ },
+ {
+  "spec": "firestorm",
+  "overrides": {
+   "miss_latency": 300
+  },
+  "error": "backend.retire.model is 'coalesced_retire_groups': the engine has toy semantics, a classic in-order ledger only (coalesced retire groups are not modeled)"
+ }
+]

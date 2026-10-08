@@ -1,0 +1,91 @@
+{
+ "golden": 1,
+ "generated_by": "explainer/factory/build_golden.py",
+ "reference": "uarchre/backends/platform/toy_trace.py (= toy.py run_toy)",
+ "cases": [
+  {
+   "case": "r10k-nop-n30-d1",
+   "file": "r10k-nop-n30-d1.jsonl",
+   "events": 1013
+  },
+  {
+   "case": "r10k-nop-n31-d1",
+   "file": "r10k-nop-n31-d1.jsonl",
+   "events": 1048
+  },
+  {
+   "case": "r10k-int-n29-d1",
+   "file": "r10k-int-n29-d1.jsonl",
+   "events": 982
+  },
+  {
+   "case": "r10k-int-n30-d1",
+   "file": "r10k-int-n30-d1.jsonl",
+   "events": 1015
+  },
+  {
+   "case": "r10k-fp-n30-d1",
+   "file": "r10k-fp-n30-d1.jsonl",
+   "events": 1013
+  },
+  {
+   "case": "r10k-load-n14-d1",
+   "file": "r10k-load-n14-d1.jsonl",
+   "events": 500
+  },
+  {
+   "case": "r10k-store-n16-d1",
+   "file": "r10k-store-n16-d1.jsonl",
+   "events": 568
+  },
+  {
+   "case": "r10k-mix-n30-d1",
+   "file": "r10k-mix-n30-d1.jsonl",
+   "events": 1013
+  },
+  {
+   "case": "small-nop-n22-d2",
+   "file": "small-nop-n22-d2.jsonl",
+   "events": 791
+  },
+  {
+   "case": "small-int-n20-d2-fp",
+   "file": "small-int-n20-d2-fp.jsonl",
+   "events": 730
+  },
+  {
+   "case": "small-fp-n16-d3-int",
+   "file": "small-fp-n16-d3-int.jsonl",
+   "events": 633
+  },
+  {
+   "case": "small-branch-n24-d1",
+   "file": "small-branch-n24-d1.jsonl",
+   "events": 820
+  },
+  {
+   "case": "small-flags-n12-d1",
+   "file": "small-flags-n12-d1.jsonl",
+   "events": 435
+  },
+  {
+   "case": "small-load-n12-d1",
+   "file": "small-load-n12-d1.jsonl",
+   "events": 440
+  },
+  {
+   "case": "small-store-n10-d2",
+   "file": "small-store-n10-d2.jsonl",
+   "events": 408
+  },
+  {
+   "case": "skew-fp-n6-d2-int",
+   "file": "skew-fp-n6-d2-int.jsonl",
+   "events": 272
+  }
+ ],
+ "events_total": 11681,
+ "sweep": "r10k_sweep.json",
+ "knee": "knee_cases.json",
+ "resolve": "resolve_cases.json"
+}

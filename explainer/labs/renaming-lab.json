@@ -1,0 +1,72 @@
+{
+ "generated_by": "explainer/labs/build_lab.py",
+ "handout": "explainer/labs/renaming-lab.md",
+ "commands": [
+  {
+   "id": "C1",
+   "tag": "lab-r10k",
+   "line": "./sweep.py toy --tag lab-r10k --toy rob=32,int_prf=64,fp_prf=64,lq=16,sq=16,load_latency=2,arch_int=33 --fillers nop,int,fp --n 4:48:4"
+  },
+  {
+   "id": "C2",
+   "tag": "lab-r10k-al64",
+   "line": "./sweep.py toy --tag lab-r10k-al64 --toy rob=64,int_prf=64,fp_prf=64,lq=16,sq=16,load_latency=2,arch_int=33 --fillers nop,int,fp --n 8:96:4"
+  },
+  {
+   "id": "C3",
+   "tag": "lab-firestorm-classic",
+   "line": "./sweep.py toy --tag lab-firestorm-classic --toy rob=330,width=8,miss_latency=300 --fillers nop --n 240:420:12"
+  }
+ ],
+ "numbers": {
+  "lab-r10k.nop.knee": 30,
+  "lab-r10k.nop.offset": 2,
+  "lab-r10k.nop.estimate": 32,
+  "lab-r10k.nop.status": "measured",
+  "lab-r10k.nop.flags": "none",
+  "lab-r10k.nop.cpi_at_knee": "208.5",
+  "lab-r10k.nop.cpi_after": "402.0",
+  "lab-r10k.int.knee": 29,
+  "lab-r10k.int.offset": 2,
+  "lab-r10k.int.estimate": 31,
+  "lab-r10k.int.status": "ambiguous",
+  "lab-r10k.int.flags": "tie.rob",
+  "lab-r10k.int.cpi_at_knee": "208.0",
+  "lab-r10k.int.cpi_after": "402.0",
+  "lab-r10k.fp.knee": 30,
+  "lab-r10k.fp.offset": 0,
+  "lab-r10k.fp.estimate": 30,
+  "lab-r10k.fp.status": "ambiguous",
+  "lab-r10k.fp.flags": "tie.rob",
+  "lab-r10k.fp.cpi_at_knee": "208.5",
+  "lab-r10k.fp.cpi_after": "402.0",
+  "lab-r10k-al64.nop.knee": 62,
+  "lab-r10k-al64.nop.offset": 2,
+  "lab-r10k-al64.nop.estimate": 64,
+  "lab-r10k-al64.nop.status": "measured",
+  "lab-r10k-al64.nop.flags": "none",
+  "lab-r10k-al64.nop.cpi_at_knee": "216.5",
+  "lab-r10k-al64.nop.cpi_after": "402.0",
+  "lab-r10k-al64.int.knee": 29,
+  "lab-r10k-al64.int.offset": 2,
+  "lab-r10k-al64.int.estimate": 31,
+  "lab-r10k-al64.int.status": "measured",
+  "lab-r10k-al64.int.flags": "none",
+  "lab-r10k-al64.int.cpi_at_knee": "208.0",
+  "lab-r10k-al64.int.cpi_after": "402.0",
+  "lab-r10k-al64.fp.knee": 32,
+  "lab-r10k-al64.fp.offset": 0,
+  "lab-r10k-al64.fp.estimate": 32,
+  "lab-r10k-al64.fp.status": "measured",
+  "lab-r10k-al64.fp.flags": "none",
+  "lab-r10k-al64.fp.cpi_at_knee": "209.0",
+  "lab-r10k-al64.fp.cpi_after": "402.0",
+  "lab-firestorm-classic.nop.knee": 328,
+  "lab-firestorm-classic.nop.offset": 2,
+  "lab-firestorm-classic.nop.estimate": 330,
+  "lab-firestorm-classic.nop.status": "measured",
+  "lab-firestorm-classic.nop.flags": "none",
+  "lab-firestorm-classic.nop.cpi_at_knee": "342.0",
+  "lab-firestorm-classic.nop.cpi_after": "602.0"
+ }
+}

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory Floor</title>
+<style>
+  :root {
+    --bg: #fcfcfb; --panel: #f4f3ef; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --line: #e1e0d9; --axis: #c3c2b7;
+    --chain-a: #2a78d6; --chain-b: #eb6834; --filler: #1baf7a; --loop: #52514e;
+    --tote-int: #2a78d6; --tote-fp: #eda100; --dock: #4a3aa7;
+    --stop: #d03b3b; --ok: #0ca30c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161614; --panel: #201f1c; --ink: #f2f1ec; --ink2: #c3c2b7; --muted: #898781;
+      --line: #34332f; --axis: #52514e;
+      --chain-a: #5b9be6; --chain-b: #f08a5d; --filler: #3cc795; --loop: #c3c2b7;
+      --tote-int: #5b9be6; --tote-fp: #f2b733; --dock: #8f82e0; --stop: #f07272; --ok: #4cc94c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161614; --panel: #201f1c; --ink: #f2f1ec; --ink2: #c3c2b7; --muted: #898781;
+    --line: #34332f; --axis: #52514e;
+    --chain-a: #5b9be6; --chain-b: #f08a5d; --filler: #3cc795; --loop: #c3c2b7;
+    --tote-int: #5b9be6; --tote-fp: #f2b733; --dock: #8f82e0; --stop: #f07272; --ok: #4cc94c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  h2 { font-size: 15px; margin: 18px 0 6px; }
+  p.sub { margin: 0 0 12px; color: var(--ink2); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: end; background: var(--panel); padding: 10px 12px; border-radius: 8px; }
+  .controls label { display: flex; flex-direction: column; font-size: 12px; color: var(--ink2); gap: 2px; }
+  select, input[type=number], button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--axis); border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  #floor svg, #sweep svg { max-width: 100%; height: auto; display: block; }
+  #floor { margin-top: 12px; overflow-x: auto; }
+  .readout { margin: 8px 0 2px; font-weight: 600; color: var(--ok); }
+  .readout.stopped { color: var(--stop); }
+  #stats { color: var(--ink2); font-size: 13px; }
+  details { margin-top: 8px; }
+  pre { background: var(--panel); padding: 8px; border-radius: 6px; font-size: 11.5px; overflow-x: auto; max-height: 180px; }
+  svg text { fill: var(--ink); font: 12px system-ui, sans-serif; }
+  svg text.hd { font-weight: 600; fill: var(--ink2); }
+  svg text.sm, svg text.tick { font-size: 11px; fill: var(--ink2); }
+  svg text.cell { font: 11px ui-monospace, monospace; fill: var(--ink); }
+  svg text.cell.inv { fill: var(--bg); }
+  svg text.cell.sm { font-size: 9.5px; }
+  svg text.axis { fill: var(--ink2); }
+  svg text.kneelbl { font-weight: 600; }
+  svg rect.slot { fill: none; stroke: var(--line); stroke-dasharray: 3 2; }
+  svg rect.tote-int, svg rect.tote-fp, svg rect.dock { fill: none; stroke: var(--axis); }
+  svg rect.tote-int.on { fill: var(--tote-int); stroke: var(--tote-int); }
+  svg rect.tote-fp.on { fill: var(--tote-fp); stroke: var(--tote-fp); }
+  svg rect.dock.on { fill: var(--dock); stroke: var(--dock); }
+  svg line.grid { stroke: var(--line); }
+  svg line.knee { stroke: var(--ink2); stroke-dasharray: 4 3; }
+  svg line.cur { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 1 3; }
+  svg polyline.series { fill: none; stroke: var(--chain-a); stroke-width: 2; }
+  svg circle.pt { fill: var(--chain-a); stroke: var(--bg); stroke-width: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink2); margin-top: 6px; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; }
+  .gap { border: 1.5px dashed var(--axis); border-radius: 8px; padding: 14px; color: var(--ink2); }
+  table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.from { color: var(--ink2); font-family: ui-monospace, monospace; font-size: 11.5px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid var(--axis); }
+  .prov-documented { border-color: var(--ink2); font-weight: 600; }
+  .prov-inferred { background: repeating-linear-gradient(45deg, transparent 0 3px, var(--line) 3px 5px); }
+  .prov-override, .prov-default { border-style: dashed; color: var(--muted); }
+  ul.assume { color: var(--ink2); font-size: 12.5px; padding-left: 18px; }
+  footer { margin-top: 22px; color: var(--muted); font-size: 12px; }
+  code { font-size: 12px; }
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Factory floor: the window probe on a core spec</h1>
+  <p class="sub">Every slot is engine state, and the engine matches the Python toy model event for event
+    (<a href="test.html">conformance</a>). Blue = chain A, orange = chain B, green = filler, grey = loop branch;
+    pale = waiting, half = executing, solid = done, waiting to ship.</p>
+
+  <div class="controls">
+    <label>core spec <select id="spec"></select></label>
+    <label>filler <select id="filler"></select></label>
+    <label>N fillers per block: <span id="nval">30</span><input id="n" type="range" min="1" max="80" value="30"></label>
+    <label>chain depth <select id="depth"><option>1</option><option>2</option><option>3</option></select></label>
+    <label>delay <select id="delay"><option>miss</option><option>fp</option><option>int</option></select></label>
+    <label>miss latency (cycles) <input id="miss" type="number" min="20" max="1000" step="10" value="200"></label>
+    <div class="row">
+      <button id="reset">Reset</button><button id="step">Step</button><button id="run">Run</button>
+    </div>
+    <label>cycles per frame <input id="speed" type="range" min="1" max="40" value="4"></label>
+    <label class="row" style="flex-direction:row;gap:4px"><input id="skip" type="checkbox" checked> skip quiet cycles</label>
+  </div>
+
+  <div id="floor"></div>
+  <div id="readout" class="readout"></div>
+  <div id="stats"></div>
+  <details><summary>Events this cycle</summary><pre id="events"></pre></details>
+
+  <h2>Where the window runs out</h2>
+  <div class="row"><button id="sweepbtn">Sweep N for this filler</button><span id="sweepnote" style="color:var(--ink2)"></span></div>
+  <div id="sweep"></div>
+
+  <h2>Where each number comes from</h2>
+  <div id="specinfo" class="table-wrap"></div>
+
+  <footer>
+    Serve this folder over HTTP (modules do not load from file://):
+    <code>python3 -m http.server -d explainer/factory 8000</code>.
+    Specs are JSON mirrors of <code>spec/cores/*.yaml</code>. The engine has a classic ROB only, so it refuses the Firestorm spec.
+  </footer>
+</main>
+<script type="module" src="view.js"></script>
+</body>
+</html>

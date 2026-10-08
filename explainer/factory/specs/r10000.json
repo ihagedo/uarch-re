@@ -1,0 +1,229 @@
+{
+ "core": "mips-r10000",
+ "isa": "mips4",
+ "sources": [
+  "yeager1996"
+ ],
+ "frontend": {
+  "fetch_width": {
+   "value": 4,
+   "unit": "instr/cycle",
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "any word alignment within a 16-word I-cache line"
+  },
+  "decode_width": {
+   "value": 4,
+   "unit": "instr/cycle",
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ]
+  },
+  "l1i": {
+   "size_kib": 32,
+   "ways": 2,
+   "line_bytes": 64,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ]
+  },
+  "direction_predictor": {
+   "entries": 512,
+   "algorithm": "2-bit-counters",
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "branch history table"
+  },
+  "taken_bubble_cycles": {
+   "value": 1,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ]
+  },
+  "branch_stack": {
+   "value": 4,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "max unresolved speculative branches; saves map-table copies for recovery; decode stalls when full"
+  }
+ },
+ "decoupling": {},
+ "backend": {
+  "rename_width": {
+   "value": 4,
+   "unit": "instr/cycle",
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ]
+  },
+  "retire": {
+   "model": "active_list",
+   "active_list": {
+    "value": 32,
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ],
+    "note": "4 parallel 8-deep FIFOs; every instruction incl. NOPs and jumps; int mul/div take 2 slots"
+   },
+   "graduate_width": {
+    "value": 4,
+    "unit": "instr/cycle",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   }
+  },
+  "int_prf": {
+   "value": 64,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "33 logical: r1-r31, Hi, Lo (r0 is not a register)"
+  },
+  "fp_prf": {
+   "value": 64,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "32 logical: f0-f31"
+  },
+  "int_prf_headroom": {
+   "value": 31,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "64 - 33; one below the active list, so an int-filler window probe is a near-tie"
+  },
+  "fp_prf_headroom": {
+   "value": 32,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "64 - 32; ties the active list"
+  },
+  "queues": {
+   "model": "split_queues",
+   "integer_queue": {
+    "value": 16,
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ],
+    "note": "unordered; entry freed at issue"
+   },
+   "address_queue": {
+    "value": 16,
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ],
+    "note": "loads and stores; circular FIFO in program order"
+   },
+   "fp_queue": {
+    "value": 16,
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   },
+   "nop_queue_bypass": {
+    "value": true,
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ],
+    "note": "jumps and NOPs are not placed in any queue, only the active list"
+   }
+  },
+  "ports": [
+   {
+    "name": "alu1",
+    "ops": "add/logic, shift, branch condition, conditional move",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   },
+   {
+    "name": "alu2",
+    "ops": "add/logic, integer multiply and divide",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   },
+   {
+    "name": "ls",
+    "ops": "load/store address calculation",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   },
+   {
+    "name": "fadd",
+    "ops": "fp add",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   },
+   {
+    "name": "fmul",
+    "ops": "fp multiply; divide/sqrt attached",
+    "provenance": "documented",
+    "sources": [
+     "yeager1996"
+    ]
+   }
+  ]
+ },
+ "memory": {
+  "l1d": {
+   "size_kib": 32,
+   "ways": 2,
+   "banks": 2,
+   "line_bytes": 32,
+   "latency_cycles": 2,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "8-word line"
+  },
+  "l2": {
+   "size_kib_min": 512,
+   "size_mib_max": 16,
+   "ways": 2,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "external; two-way pseudo-set-associative"
+  },
+  "mlp": {
+   "value": 4,
+   "provenance": "documented",
+   "sources": [
+    "yeager1996"
+   ],
+   "note": "nonblocking refills, up to 4 outstanding reads from L2 or memory"
+  }
+ }
+}

@@ -1,0 +1,5 @@
+{
+  "//": "Lets Node load the .js files here as ES modules (the browser does not need it). No dependencies.",
+  "type": "module",
+  "private": true
+}
