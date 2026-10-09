@@ -82,6 +82,22 @@
     - {filler: store, depth: 8, delay: fp, n: "8:176:8"}
   expect: [delay.disagreement, tie.rob]
 
+- name: issue_time_no_early_release
+  why: >-
+    As issue_time_lsq without early release: the LQ still splits (the miss
+    loads compete for LQ slots at issue), but the store reads SQ + scheduler
+    (~39) under both delays, so A5 stays silent on a wrong SQ. A known blind
+    spot: M1 releases early, so its readings split.
+  cfg: {rob: 128, int_prf: 512, fp_prf: 512, lq: 32, sq: 24, lsq_alloc: issue, ls_sched: 16}
+  curves:
+    - {filler: nop, n: "40:176:8"}
+    - {filler: load, n: "8:176:8"}
+    - {filler: store, n: "8:176:8"}
+    - {filler: nop, depth: 8, delay: fp, n: "40:176:8"}
+    - {filler: load, depth: 8, delay: fp, n: "8:176:8"}
+    - {filler: store, depth: 8, delay: fp, n: "8:176:8"}
+  expect: [delay.disagreement]
+
 - name: mini_firestorm
   why: >-
     retire rows (48 x 7, one failable per row) plus issue-time LSQ with early

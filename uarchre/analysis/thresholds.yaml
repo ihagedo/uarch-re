@@ -1,7 +1,7 @@
-# Anomaly-rule thresholds (anomaly.py). Tuned only on synthetic curves, the toy model and
-# gem5; to be frozen, with the commit hash, before any M1 data.
-frozen: false
-frozen_commit: null
+# Anomaly-rule thresholds (anomaly.py), tuned only on synthetic curves, the toy model and gem5,
+# and frozen before any M1 data. frozen_sha256 hashes every rule section; tests fail if one changes.
+frozen: true
+frozen_sha256: bc6efdf204861eceb84d03a38947263093835517ddc24b21c1df355ae6fd94dc
 
 # A1 shape.extra_step: a split is a step when the 3-point medians either side rise by > min_rise.
 # Neighbouring steps are one transition (a depth >= 2 staircase) unless plateau_pts points with
@@ -47,14 +47,11 @@ A6:
 A7:
   slack: 1.0
 
-# A8 drift.reps: (a) |clock_ratio_post / clock_ratio_pre - 1| > clock; (b) Kruskal-Wallis across
-# outer reps, p < kw_p and per-rep median residuals spread by > min_effect; (c) |Spearman rho| of
-# residual vs order_index > rho. Not applied on toy or gem5.
+# A8 drift.reps: per-outer-rep knees spread by more than max(knee_abs, knee_rel x knee). Not
+# applied on toy or gem5.
 A8:
-  clock: 0.02
-  kw_p: 0.01
-  min_effect: 0.02
-  rho: 0.3
+  knee_abs: 2.0
+  knee_rel: 0.02
 
 # A9 noise.outlier: a repetition outside the moving-median band by more than mads robust sigmas
 # (1.4826 x MAD of the relative residuals, floored at floor).

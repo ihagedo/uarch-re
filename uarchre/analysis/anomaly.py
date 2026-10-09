@@ -6,15 +6,18 @@ Thresholds are in thresholds.yaml.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 import os
+import re
 
 import numpy as np
 import yaml
 
 from . import offsets as _offsets
 from .bootstrap import bootstrap_knee
-from .knee import Knee, STRUCT as _STRUCT, _split
+from .knee import Knee, STRUCT as _STRUCT, _split, find_knee
 
 THRESHOLDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thresholds.yaml")
 
@@ -61,6 +64,12 @@ Key = tuple[str, int, str]  # (filler, depth, delay)
 def load_thresholds(path=THRESHOLDS):
     with open(path) as fh:
         return yaml.safe_load(fh)
+
+
+def thresholds_hash(thr):
+    """sha256 of every rule section (A1...), the value frozen in thresholds.yaml."""
+    rules = {k: v for k, v in thr.items() if re.fullmatch(r"A\d+b?", k)}
+    return hashlib.sha256(json.dumps(rules, sort_keys=True).encode()).hexdigest()
 
 
 def probe_params(depth, delay="miss"):
@@ -274,8 +283,8 @@ def transitions(x, y, min_rise=0.4, plateau_pts=3, plateau_flat=0.2):
     return out
 
 
-def transition_width(x, y, knee):
-    """10-90 % width of the step at `knee` (A6), in N.
+def transition_band(x, y, knee):
+    """[last N below 10 %, first N above 90 %] of the step at `knee` (A6), or None.
 
     The plateau lines are fitted more than max(2, 2 % of knee) away, so a sloped plateau is not transition."""
     x, y = np.asarray(x, float), np.asarray(y, float)
@@ -303,7 +312,30 @@ def transition_width(x, y, knee):
     high = right & (y >= np.polyval(R, x) - 0.1 * J)
     if not low.any() or not high.any():
         return None
-    return float(x[high].min() - x[low].max())
+    return [float(x[low].max()), float(x[high].min())]
+
+
+def transition_width(x, y, knee):
+    """10-90 % width of the step at `knee`, in N."""
+    band = transition_band(x, y, knee)
+    return None if band is None else band[1] - band[0]
+
+
+def band_limit(knee, depth, delay, thr):
+    """Widest transition A6 accepts as jitter; ALU delays add a ramp per link (it retires link by link)."""
+    t = thr["A6"]
+    lim = max(t["abs_width"], t["rel_width"] * knee)
+    return lim + t["alu_ramp_per_link"] * depth if is_alu(delay) else lim
+
+
+def band_ci(x, y, knee, ci, depth=1, delay="miss", thr=None):
+    """`ci` widened to the transition band when the step is wider than A6 allows: the bootstrap only
+    sees rep-to-rep noise, not where on a soft ramp the structure ends."""
+    band = transition_band(x, y, knee)
+    lim = band_limit(knee, depth, delay, load_thresholds() if thr is None else thr)
+    if band is None or band[1] - band[0] <= lim:
+        return ci
+    return [min(ci[0], band[0]), max(ci[1], band[1])]
 
 
 # --------------------------------------------------------------------------- rules
@@ -442,8 +474,19 @@ def a4_retire_group(rs, thr):
     ]
 
 
+def band_knee(reps, depth=1, delay="miss", **kw):
+    """bootstrap_knee() with the CI widened by band_ci()."""
+    k = bootstrap_knee(reps, **kw)
+    if k.knee is not None and k.ci is not None:
+        ns = sorted(reps)
+        k.ci = band_ci(ns, [float(np.median(reps[n])) for n in ns], k.knee, k.ci, depth, delay)
+    return k
+
+
 def a5_delay(rs, thr):
-    """Pairs a miss curve with an ALU curve of the same filler at any depth (offsets are per depth)."""
+    """Pairs a miss curve with an ALU curve of the same filler at any depth (offsets are per depth).
+
+    Blind to issue-time allocation without early release: both delays then read SQ + scheduler."""
     t = thr["A5"]
     out = []
     for f in sorted({c.filler for c in rs.curves.values()}):
@@ -479,17 +522,15 @@ def a5_delay(rs, thr):
 
 def a6_jitter(rs, thr):
     """ALU delays get `alu_ramp_per_link` N per link (toy fp x 8: 4 N, gem5 fsqrt x 12: 5 N)."""
-    t = thr["A6"]
     out = []
     for c in rs.curves.values():
         if c.reps is None or not c.has_knee():
             continue
         x, y = c.median_curve()
         k = c.knee.knee
-        lim = max(t["abs_width"], t["rel_width"] * k)
-        if is_alu(c.delay):  # the delay group retires link by link: a calibrated ramp, not jitter
-            lim += t["alu_ramp_per_link"] * c.depth
-        w = transition_width(x, y, k)
+        lim = band_limit(k, c.depth, c.delay, thr)
+        band = transition_band(x, y, k)
+        w = None if band is None else band[1] - band[0]
         ciw = c.knee.ci[1] - c.knee.ci[0] if c.knee.ci_method == "bootstrap" else 0.0
         if (w is not None and w > lim) or ciw > lim:
             out.append(
@@ -502,6 +543,7 @@ def a6_jitter(rs, thr):
                     width=w,
                     ci_width=ciw,
                     limit=lim,
+                    band=[b + (c.offset or {"value": 0.0})["value"] for b in band] if w and w > lim else None,
                 )
             )
     return out
@@ -545,67 +587,35 @@ def _residuals(c):
 
 
 def a8_drift(rs, thr):
-    """(a) clock ratio moved within a launch, (b) outer reps differ, (c) residuals trend with run order.
-
-    (b) needs an effect size as well as p, since native reps also change the chain layout."""
+    """Outer reps disagree on the knee. A whole rep running fast or slow (turbo, host load) shifts the
+    level, not the step, so only knee disagreement is drift that matters for a window probe."""
     t = thr["A8"]
     out = []
     if rs.deterministic:
-        return out  # a simulator has no clock to drift; rep-to-rep spread is the seed
-    bad = [
-        p for p in rs.clock if p.get("pre") and p.get("post") and abs(p["post"] / p["pre"] - 1) > t["clock"]
-    ]
-    if bad:
-        out.append(
-            _finding(
-                "drift.reps",
-                None,
-                f"clock ratio moved by > {t['clock']:.0%} within {len(bad)} launch(es); rerun them",
-                [],
-                clock=bad[:10],
-            )
-        )
-    from scipy import stats
-
+        return out  # a simulator's rep-to-rep spread is the chain seed
     for c in rs.curves.values():
-        if c.reps is None:
+        if c.reps is None or not c.has_knee():
             continue
-        res = _residuals(c)
         nrep = min(len(v) for v in c.reps.values())
-        if nrep >= 2:
-            groups = [[e for n, r, e in res if r == k] for k in range(nrep)]
-            meds = [float(np.median(g)) for g in groups]
-            try:
-                p = stats.kruskal(*groups).pvalue
-            except ValueError:  # all residuals identical: no drift
-                p = 1.0
-            if p < t["kw_p"] and max(meds) - min(meds) > t["min_effect"]:
-                out.append(
-                    _finding(
-                        "drift.reps",
-                        c.structure,
-                        f"{_ckey(c)}: outer reps differ (Kruskal-Wallis p={p:.1e}, per-rep median "
-                        f"residuals {', '.join(f'{m:+.1%}' for m in meds)}); rerun the outlying reps",
-                        [c.key],
-                        kw_p=p,
-                        rep_medians=meds,
-                    )
+        if nrep < 2:
+            continue
+        min_jump, steps = probe_params(c.depth, c.delay)
+        ns = sorted(c.reps)
+        knees = [find_knee(ns, [c.reps[n][r] for n in ns], min_jump, steps).knee for r in range(nrep)]
+        got = [k for k in knees if k is not None]
+        lim = max(t["knee_abs"], t["knee_rel"] * c.knee.knee)
+        if len(got) >= 2 and max(got) - min(got) > lim:
+            out.append(
+                _finding(
+                    "drift.reps",
+                    c.structure,
+                    f"{_ckey(c)}: outer reps put the knee at {', '.join(f'{k:g}' for k in got)} "
+                    f"(spread > {lim:.1f}); rerun the outlying reps",
+                    [c.key],
+                    rep_knees=knees,
+                    limit=lim,
                 )
-                continue
-        if c.order:
-            pts = [(c.order[(n, r)], e) for n, r, e in res if (n, r) in c.order]
-            if len(pts) >= 10:
-                rho = stats.spearmanr([p[0] for p in pts], [p[1] for p in pts]).statistic
-                if np.isfinite(rho) and abs(rho) > t["rho"]:
-                    out.append(
-                        _finding(
-                            "drift.reps",
-                            c.structure,
-                            f"{_ckey(c)}: residuals trend with run order (Spearman rho={rho:.2f})",
-                            [c.key],
-                            rho=rho,
-                        )
-                    )
+            )
     return out
 
 
@@ -615,7 +625,7 @@ def a9_outlier(rs, thr):
     t = thr["A9"]
     out = []
     if rs.deterministic:
-        return out  # as A8: on a simulator, rep-to-rep spread is the chain seed, not noise
+        return out  # on a simulator, rep-to-rep spread is the chain seed, not noise
     for c in rs.curves.values():
         if c.reps is None or len(c.reps) < 5:
             continue
@@ -626,7 +636,7 @@ def a9_outlier(rs, thr):
         hi = np.array([s[max(0, i - 1) : i + 2].max() for i in range(n)])
         idx = {v: i for i, v in enumerate(x)}
         vals = [(nn, r, v, idx[float(nn)]) for nn, vs in c.reps.items() for r, v in enumerate(vs)]
-        # each rep against its own level: a whole rep that sits high is drift (A8), not outliers
+        # each rep against its own level: a whole rep that sits high is a level shift, not outliers
         reps_ = np.array([r for _, r, _, _ in vals])
         rel = np.array([v / s[i] - 1 for _, _, v, i in vals])
         shift = {r: float(np.median(rel[reps_ == r])) for r in set(reps_.tolist())}
@@ -872,7 +882,7 @@ def apply(
     """Merge findings into attribute()-style estimates in place (only those at depth/delay, if given).
 
     Rule ids go to `anomalies`, a non-info finding replaces a "measured" status, A3/A5 set `bound`
-    (A5 wins). replace=True first drops knee.py's own flags, so the registry alone decides."""
+    (A5 wins), A6 widens `ci` to the transition band. replace=True first drops knee.py's own flags."""
     if replace:
         for e in estimates.values():
             e["anomalies"] = [a for a in e.get("anomalies", []) if a not in SEVERITY]
@@ -895,4 +905,7 @@ def apply(
             b = f.evidence.get("bound")
             if b and (f.rule == "delay.disagreement" or "bound" not in e):
                 e["bound"] = dict(b)
+            band = f.evidence.get("band")
+            if band and e.get("ci"):
+                e["ci"] = [min(e["ci"][0], band[0]), max(e["ci"][1], band[1])]
     return estimates

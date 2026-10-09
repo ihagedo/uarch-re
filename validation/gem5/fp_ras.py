@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log, g5
 from uarchre.kernels.predictors import ras_source
 from uarchre.analysis.knee import find_knee
-from uarchre.analysis.bootstrap import bootstrap_knee
+from uarchre.analysis.anomaly import band_knee
 from uarchre.viz import tolerance
 
 OUT = os.path.join(RESULTS, "fp-ras")
@@ -67,7 +67,7 @@ def analyze(raw):
             per_seed.append(marginal(T))
         ds = sorted(per_seed[0])
         reps = {d: [m[d] for m in per_seed] for d in ds}
-        kn = bootstrap_knee(reps)
+        kn = band_knee(reps)
         med = {d: float(np.median(reps[d])) for d in ds}
         pt = find_knee(ds, [med[d] for d in ds])
         # cross-check from gem5's own counter: expected mispredicted returns

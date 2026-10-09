@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log, g5
 from uarchre.kernels.predictors import indirect_source
-from uarchre.analysis.bootstrap import bootstrap_knee
+from uarchre.analysis.anomaly import band_knee
 from uarchre.viz import tolerance
 
 OUT = os.path.join(RESULTS, "fp-indirect")
@@ -88,7 +88,7 @@ def knee_cfg(T):
     nrep = min(len(v) for v in T.values())
     margs = [marginal({s: v[i] for s, v in T.items()}) for i in range(nrep)]
     ss = sorted(margs[0])
-    return bootstrap_knee({s: [m[s] for m in margs] for s in ss}), margs
+    return band_knee({s: [m[s] for m in margs] for s in ss}), margs
 
 
 def campaign():

@@ -8,7 +8,7 @@ Pass means within max(2 entries, 2%) of the configured value unless noted.
 | --- | --- | --- | --- |
 | P0.1 | knee-to-size offsets | toy, gem5 | pass |
 | P0.2 | knee confidence intervals | synthetic curves | pass |
-| P0.3 | anomaly rules A1-A12 | synthetic, toy, gem5 | partial: thresholds not frozen |
+| P0.3 | anomaly rules A1-A12 | synthetic, toy, gem5 | pass |
 | P0.4 | measurement hygiene on a hybrid CPU | x86 | partial |
 | P0.5 | window probe on RTL | BOOM | pass |
 | P0.6 | AArch64 emitter and macOS driver | gem5 ARM | partial: driver untested on a Mac |

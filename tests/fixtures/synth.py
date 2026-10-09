@@ -4,8 +4,8 @@
     sigmoid    logistic centred on knee + 0.5, 10-90 % rise over `width` N
     staircase  `steps` equal sub-steps from knee + 1, one every max(1, width) N (toy depth >= 2)
 
-Noise is value * (1 + noise_sd * N(0, 1)) per repetition. `outliers` ((n, factor), ...) scale
-repetition 0; `drift` (from_rep, factor) scales every repetition from `from_rep` on.
+Noise is value * (1 + noise_sd * N(0, 1)) per repetition. `outliers` ((n, factor), ...) scale rep 0;
+`drift` (from_rep, factor) scales and `knee_drift` (from_rep, dn) moves the step of reps from_rep on.
 """
 
 import math
@@ -26,15 +26,18 @@ def synth_curve(
     noise_sd=0.0,
     outliers=(),
     drift=None,
+    knee_drift=None,
     n_reps=5,
     seed=0,
 ):
     """Return {n: [value per repetition]}."""
     rng = np.random.default_rng(seed)
     out = {}
+    r0, dn = knee_drift or (n_reps, 0)
     for n in ns:
         if shape == "step":
             y = lo if n <= knee else hi
+            y2 = lo if n <= knee + dn else hi
         elif shape == "sigmoid":
             s = max(width, 1e-9) / (2 * math.log(9))
             y = lo + (hi - lo) / (1 + math.exp(-(n - knee - 0.5) / s))
@@ -46,6 +49,8 @@ def synth_curve(
             raise ValueError(shape)
         y += slope * max(0, n - knee)
         reps = y * (1 + noise_sd * rng.standard_normal(n_reps))
+        if shape == "step":
+            reps[r0:] *= (y2 + slope * max(0, n - knee)) / y
         out[n] = [float(v) for v in reps]
     for n, factor in outliers:
         out[n][0] *= factor
@@ -85,6 +90,14 @@ CASES = [
     ),
     dict(name="soft", knee=62, kw=dict(lo=300, hi=600, shape="sigmoid", width=60), rules=["shape.poor_fit"]),
     dict(name="tiny_jump", knee=62, kw=dict(lo=300, hi=360, noise_sd=0.02), rules=["noise.unstable_knee"]),
-    dict(name="drift", knee=62, kw=dict(lo=300, hi=600, drift=(3, 1.05)), rules=["drift.reps"]),
+    # a whole rep 5 % slow moves the level, not the step: not drift for a window probe
+    dict(name="level_drift", knee=62, kw=dict(lo=300, hi=600, drift=(3, 1.05)), rules=[]),
+    # two of five reps step 6 N later: their points also read as outliers and widen the CI
+    dict(
+        name="knee_drift",
+        knee=62,
+        kw=dict(lo=300, hi=600, knee_drift=(3, 6)),
+        rules=["drift.reps", "jitter.band", "noise.outlier"],
+    ),
     dict(name="outlier", knee=62, kw=dict(lo=300, hi=600, outliers=((50, 3.0),)), rules=["noise.outlier"]),
 ]

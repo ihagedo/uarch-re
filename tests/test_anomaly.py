@@ -18,6 +18,7 @@ from uarchre.analysis.anomaly import (
     apply,
     transitions,
     load_thresholds,
+    thresholds_hash,
     probe_params,
     RULE_IDS,
     SEVERITY,
@@ -46,7 +47,8 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(set(SEVERITY) - set(RULES), {"offset.missing"})  # emitted by the A11 rule
         self.assertEqual(set(RULE_IDS.values()), set(SEVERITY))
         thr = load_thresholds()
-        self.assertFalse(thr["frozen"])  # to be frozen before the first M1 run
+        self.assertTrue(thr["frozen"])
+        self.assertEqual(thresholds_hash(thr), thr["frozen_sha256"], "frozen thresholds changed")
         for code in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A12"):
             self.assertIn(code, thr)
 

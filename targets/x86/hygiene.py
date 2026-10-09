@@ -1,5 +1,5 @@
 """Measurement hygiene for native x86 runs: waits for quiet CPUs, monitored launches
-(preemption, context switches, SMT-sibling load) and drift rule A8 (drift.reps).
+(preemption, context switches, SMT-sibling load) and level-drift checks.
 """
 
 import os
@@ -127,8 +127,9 @@ def residuals(rows):
 
 
 def drift_rules(rows, ratio_pairs=None, th=A8):
-    """Rule A8 on one campaign's per-launch medians: (a) clock-ratio change within a launch,
-    (b) Kruskal-Wallis across outer reps, (c) residual trend over run order.
+    """Level-drift checks on one campaign's per-launch medians: (a) clock-ratio change within a launch,
+    (b) Kruskal-Wallis across outer reps, (c) residual trend over run order. A window probe's knee
+    ignores level drift, so anomaly.py's A8 compares per-rep knees instead.
     Returns {fires, a, b, c} with the evidence."""
     from scipy import stats
 

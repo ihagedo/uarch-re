@@ -161,13 +161,6 @@ def cross_cases():
             {"ctx": {"emitter": "x86_64", "platform": "native"}},
             ["offset.missing"],
         ),
-        # A8a: clock probe moved 5 % within a launch
-        (
-            "clock_drift_synth",
-            [_c("nop", 62)],
-            {"clock": [{"rep": 0, "pre": 0.58, "post": 0.58}, {"rep": 1, "pre": 0.58, "post": 0.55}]},
-            ["drift.reps"],
-        ),
     ]
     out = []
     for name, curves, kw, expect in cases:

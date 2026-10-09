@@ -5,6 +5,9 @@
 
 export PATH="$HOME/opt/riscv64-cross/bin:$HOME/opt/aarch64-cross/bin:$PATH"
 export UARCHRE_SCRATCH="${UARCHRE_SCRATCH:-/var/tmp/$USER/uarch-re}"
+# keep bytecode and lint caches on local disk, not next to the sources
+export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/var/tmp/$USER/pycache}"
+export RUFF_CACHE_DIR="${RUFF_CACHE_DIR:-/var/tmp/$USER/ruff-cache}"
 UARCHRE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 for d in build results refs; do
   [ -L "$UARCHRE_ROOT/$d" ] || echo "env.sh: $d is not a symlink into $UARCHRE_SCRATCH" >&2

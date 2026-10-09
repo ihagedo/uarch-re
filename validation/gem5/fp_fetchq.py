@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log, g5
 from uarchre.kernels.predictors import fetchq_source
 from uarchre.analysis.knee import find_knee
-from uarchre.analysis.bootstrap import bootstrap_knee
+from uarchre.analysis.anomaly import band_knee
 from uarchre.viz import tolerance
 
 OUT = os.path.join(RESULTS, "fp-fetchq")
@@ -112,7 +112,7 @@ def analyze(raw):
             per_chain[c] = {r["b"]: float(np.median(r["cyc"])) for r in rows if r["chain"] == c}
         common = [b for b in bs if all(b in per_chain[c] for c in chains)]
         reps = {b: [per_chain[c][b] for c in chains] for b in common}
-        kn = bootstrap_knee(reps)
+        kn = band_knee(reps)
         per_chain_knee = {c: knee_of([r for r in rows if r["chain"] == c]).knee for c in chains}
         out.append(
             {
