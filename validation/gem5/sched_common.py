@@ -4,13 +4,15 @@ Runs raw-asm kernels under config_o3.py (AArch64 kernels: arm_config_o3.py on th
 like gem5.run_gem5_binary, plus a timeout
 (a layout that leaves an op class without a capable queue hangs dispatch), a result
 cache in results/gem5/sched-cache/, and ground truth read back from config.ini.
-`expected_knee` and `hockey` are the P1.5 reference model and pairing fit.
+`expected_knee` and `hockey` are the P1.5 reference model and pairing fit; `hinge`, `ols` and
+`width` the dispatch-probe and retire-slope fits.
 """
 
 import configparser
 import hashlib
 import json
 import os
+import statistics
 import subprocess
 import sys
 
@@ -299,3 +301,49 @@ def hockey(ms, knees):
     sel = ms >= b
     slope = float(np.polyfit(ms[sel], ks[sel], 1)[0]) if sel.sum() >= 2 and np.ptp(ms[sel]) > 0 else 0.0
     return b, round(c), slope
+
+
+def sharing_verdict(ms, b):
+    """What a `hockey` break b over preload counts ms says about the two classes' queues."""
+    if b >= max(ms):
+        return "separate queues"
+    if b <= min(ms):
+        return "shared from the first op"
+    return f"shared after {b} ops"
+
+
+def warm(cycles):
+    """Median over inner reps after the first (rep 0 runs the point's code cold)."""
+    c = cycles[1:] if len(cycles) > 1 else cycles
+    return float(statistics.median(c))
+
+
+def hinge(ms, ys):
+    """Least-squares flat-then-linear fit: returns (corner, base, slope)."""
+    best = None
+    for f in np.arange(0, ms.max() - 16 + 0.5, 0.5):
+        d_ = np.maximum(0, ms - f)
+        A = np.vstack([np.ones_like(ms), d_]).T
+        coef, *_ = np.linalg.lstsq(A, ys, rcond=None)
+        sse = float(np.sum((ys - A @ coef) ** 2))
+        if best is None or sse < best[0]:
+            best = (sse, float(f), float(coef[0]), float(coef[1]))
+    return best[1:]
+
+
+def ols(x, y):
+    """(slope, intercept, slope standard error) of a least-squares line."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    A = np.vstack([x, np.ones_like(x)]).T
+    coef, res, *_ = np.linalg.lstsq(A, y, rcond=None)
+    dof = max(len(x) - 2, 1)
+    s2 = float(np.sum((y - A @ coef) ** 2) / dof)
+    se = float(np.sqrt(s2 / np.sum((x - x.mean()) ** 2)))
+    return float(coef[0]), float(coef[1]), se
+
+
+def width(slope, se, per):
+    """per / slope with a 95% interval from the slope's standard error."""
+    w = per / slope
+    lo, hi = per / (slope + 2 * se), per / max(slope - 2 * se, 1e-9)
+    return w, [lo, hi]

@@ -12,7 +12,6 @@ import argparse
 import csv
 import json
 import os
-import platform
 import re
 import statistics
 import subprocess
@@ -32,66 +31,8 @@ from uarchre.analysis.bootstrap import bootstrap_knee  # noqa: E402
 from uarchre.analysis.knee import attribute  # noqa: E402
 from uarchre.spec import spec_from_estimates, write_spec  # noqa: E402
 
-MACOS = platform.system() == "Darwin"
-
-
-def sh(*cmd):
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
-def machine_info():
-    """What identifies a product, never a machine or a person."""
-    info = {"system": platform.system(), "machine": platform.machine(), "release": platform.release()}
-    if MACOS:
-        for k in (
-            "hw.model",
-            "machdep.cpu.brand_string",
-            "hw.memsize",
-            "hw.nperflevels",
-            "sysctl.proc_translated",
-            "kern.osproductversion",
-            "kern.osversion",
-        ):
-            info[k] = sh("sysctl", "-n", k)
-        levels = []
-        for i in range(int(info.get("hw.nperflevels") or 0)):
-            levels.append(
-                {
-                    k: sh("sysctl", "-n", f"hw.perflevel{i}.{k}")
-                    for k in ("name", "physicalcpu", "l1icachesize", "l1dcachesize", "l2cachesize")
-                }
-            )
-        info["perflevels"] = levels
-        batt = sh("pmset", "-g", "batt")
-        info["power"] = "ac" if "AC Power" in batt else ("battery" if "Battery Power" in batt else "unknown")
-        info["low_power_mode"] = bool(re.search(r"lowpowermode\s+1", sh("pmset", "-g")))
-    else:
-        cpuinfo = open("/proc/cpuinfo").read() if os.path.exists("/proc/cpuinfo") else ""
-        info["cpu_parts"] = sorted(set(re.findall(r"CPU part\s*:\s*(\S+)", cpuinfo)))
-        info["compatible"] = sh("cat", "/proc/device-tree/compatible").replace("\x00", " ")
-    info["load_avg_start"] = os.getloadavg()[0]
-    return info
-
-
-def preflight(info, force):
-    problems = []
-    if info["machine"] not in ("arm64", "aarch64"):
-        problems.append(f"not an arm64 Python ({info['machine']}): run a native arm64 python3")
-    if MACOS:
-        if info.get("sysctl.proc_translated") == "1":
-            problems.append("running under Rosetta")
-        if info.get("power") == "battery":
-            problems.append("on battery power")
-        if info.get("low_power_mode"):
-            problems.append("Low Power Mode is on")
-    if info["load_avg_start"] > 2.0:
-        problems.append(f"load average {info['load_avg_start']:.1f}: close other apps")
-    if problems and not force:
-        sys.exit("refusing to run: " + "; ".join(problems) + " (--force to run anyway; it is recorded)")
-    return problems
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from native import MACOS, machine_info, preflight  # noqa: E402
 
 
 class M1Runner:

@@ -80,6 +80,21 @@ def bracket(ns, ys, frac=0.1):
     return None
 
 
+def change_point(xs, ys):
+    """Change point c of the best continuous hinge (flat, then linear), c over the interior xs."""
+    import numpy as np
+
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    best = None
+    for c in xs[1:-1]:
+        X = np.column_stack([np.ones_like(xs), np.maximum(0, xs - c)])
+        coef, *_ = np.linalg.lstsq(X, ys, rcond=None)
+        sse = float(((X @ coef - ys) ** 2).sum())
+        if best is None or sse < best[0] - 1e-12:
+            best = (sse, int(c))
+    return best[1] if best else None
+
+
 def fine_jobs(sizes=SSIT, coarse="coarse.json", out=OUT):
     co = load(os.path.join(out, coarse))
     jobs = []

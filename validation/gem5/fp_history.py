@@ -17,8 +17,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log
+from fp_common import history_frac as frac, history_knee
 from uarchre.kernels.predictors import history_source
-from uarchre.analysis.anomaly import band_knee
 from uarchre.viz import tolerance
 
 OUT = os.path.join(RESULTS, "fp-history")
@@ -65,21 +65,10 @@ def runs(todo):
     return [r for rows in pmap(run_one, jobs) for r in rows]
 
 
-def frac(rows):
-    """{N: f(N)} for one seed."""
-    out = {}
-    for r in rows:
-        p = {k.split(":")[0]: float(np.median(v)) for k, v in r["pts"].items()}
-        den = p["rand"] - p["const"]
-        out[r["n"]] = (p["corr"] - p["const"]) / den if den > 0.5 else float("nan")
-    return out
-
-
 def knee(raw, h):
     per_seed = [frac([r for r in raw if r["maxHist"] == h and r["seed"] == s]) for s in SEEDS]
-    ns = sorted(set.intersection(*[set(f) for f in per_seed]))
-    ns = [n for n in ns if all(np.isfinite(f[n]) for f in per_seed)]
-    return band_knee({n: [1 + f[n] for f in per_seed] for n in ns}), per_seed, ns
+    k, ns = history_knee(per_seed)
+    return k, per_seed, ns
 
 
 def campaign():

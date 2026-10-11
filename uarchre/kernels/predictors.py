@@ -122,17 +122,33 @@ int main(void) {{
 
 
 def fetchq_source(
-    bs, copies=16, chain=12, stride=64 << 10, iters=12, reps=3, warm=2, isa="riscv64", counter="pmccntr"
+    bs,
+    copies=16,
+    chain=12,
+    stride=64 << 10,
+    iters=12,
+    reps=3,
+    warm=2,
+    isa="riscv64",
+    counter="pmccntr",
+    line_bytes=64,
+    slot=4096,
+    spread=1,
+    hops=1,
+    serializer=None,
 ):
-    """C source for up to stride/4096 points (B NOPs each) of the fetch-queue sweep.
+    """C source for up to stride/slot points (B NOPs each) of the fetch-queue sweep.
 
-    Each block: an fsqrt chain (backend stall), a serializing FP status read, B NOPs and a jump to a line that
-    misses in L1i and L2; the miss is hidden while the frontend can buffer the NOPs and the jump."""
+    Each block: an fsqrt chain (backend stall), a serializing read, B NOPs and a jump through `hops` lines
+    that miss in L1i (and L2 on gem5); the misses stay hidden while the frontend holds the NOPs and jump."""
     bs = [bs] if isinstance(bs, int) else list(bs)
-    per = stride // 4096
-    assert copies <= 16 and len(bs) <= per and copies * stride <= (1 << 20)
-    assert 4 * (max(bs) + chain + 2) + 64 * (copies - 1) < 3904, "block must fit below the tail"
     a64 = isa == "aarch64"
+    ser = serializer or ("mrs x9, fpsr" if a64 else "csrr t2, fflags")
+    ser = [s.strip() for s in ser.split(";") if s.strip()]  # ';' starts a comment in Mach-O asm
+    per = stride // slot
+    tail = slot - line_bytes * hops - 128
+    assert 4 * copies <= line_bytes and len(bs) <= per and copies * stride <= (128 << 20 if a64 else 1 << 20)
+    assert 4 * (max(bs) + chain + len(ser) + 1) + line_bytes * spread * (copies - 1) < tail, "block too long"
     j = "b" if a64 else "j"
     asm = [".text", ".p2align 12"]
     for v in range(len(bs)):
@@ -142,28 +158,35 @@ def fetchq_source(
         else:
             asm += ["fcvt.d.w ft0, zero", "li t0, 4", "fcvt.d.w ft1, t0"]  # ft1 = 4.0, sqrt stays finite
         asm += [f"{j} fq_blk{v}_0"]
-    # page k*per + v holds block (v, k) at offset 64k and its landing line at 4032 + 4k: one L1i set
-    # (63) and one L2 set per variant, thrashed by copies > 8 ways, and one SimpleBTB slot per jump.
-    # B + chain + 2 > 128 instructions would put 9+ blocks in one L1i set.
+    # slot k*per + v holds block (v, k) at line spread*k and its landing lines at the slot's end, one per
+    # hop, in descending order. Defaults: one L1i set (63) and one L2 set per variant, thrashed by
+    # copies > 8 ways, and one SimpleBTB slot per jump; B + chain + 2 > 128 thrashes the blocks too.
     asm += [".p2align 16", "fq_region:"]
+    land = lambda v, k, h: f"fq_land{v}_{k}" + (f"_{h}" if h else "")
     for k in range(copies):
         for v, b in enumerate(bs):
-            page = f"fq_region + {(k * per + v) * 4096}"
+            page = f"fq_region + {(k * per + v) * slot}"
             nxt = f"fq_blk{v}_{k + 1}" if k + 1 < copies else f"fq_tail{v}"
-            asm += [f".org {page} + {64 * k}", f"fq_blk{v}_{k}:"]
+            asm += [f".org {page} + {line_bytes * spread * k}", f"fq_blk{v}_{k}:"]
             asm += ["fsqrt d1, d1" if a64 else "fsqrt.d ft1, ft1"] * chain  # chain x FloatSqrt latency
             # serializing read: the next instruction waits in rename for an empty ROB (gem5: csrr is
             # serialize-after, mrs serialize-before)
-            asm += ["mrs x9, fpsr" if a64 else "csrr t2, fflags"]
+            asm += ser
             asm += ["nop"] * b
-            asm += [f"{j} fq_land{v}_{k}"]
+            asm += [f"{j} {land(v, k, 0)}"]
             if k == 0:
-                asm += [f".org {page} + 3904", f"fq_tail{v}:"]
+                asm += [f".org {page} + {tail}", f"fq_tail{v}:"]
                 if a64:
                     asm += ["subs x0, x0, #1", f"b.ne fq_blk{v}_0", "ret"]
                 else:
                     asm += ["addi a0, a0, -1", f"bnez a0, fq_blk{v}_0", "ret"]
-            asm += [f".org {page} + {4032 + 4 * k}", f"fq_land{v}_{k}:", f"{j} {nxt}"]
+            for h in reversed(range(hops)):
+                to = nxt if h == hops - 1 else land(v, k, h + 1)
+                asm += [
+                    f".org {page} + {slot - line_bytes * (h + 1) + 4 * k}",
+                    f"{land(v, k, h)}:",
+                    f"{j} {to}",
+                ]
     asm += [f".org fq_region + {copies * stride}"]
     decl = "\n".join(_extern(isa, f"void fq_kern{v}(long laps)", f"fq_kern{v}") for v in range(len(bs)))
     runs = "\n".join(
@@ -204,17 +227,19 @@ def fdip_order(n_lines, seed=1):
     return order
 
 
-def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1, isa="riscv64", counter="pmccntr"):
+def fdip_source(
+    periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1, isa="riscv64", counter="pmccntr", line_bytes=64
+):
     """C source for one or more barrier periods (0 = none) of the run-ahead sweep.
 
-    Each 64 B line is NOPs and a jump to the next line in `fdip_order` (7168 lines exceed L2). Every P-th
+    Each line (64 B) is NOPs and a jump to the next line in `fdip_order` (7168 lines exceed L2). Every P-th
     line ends in a `ret` the RAS mispredicts, so FDIP overlaps at most min(P, FTQ) line misses."""
     periods = [periods] if isinstance(periods, int) else list(periods)
     order = fdip_order(n_lines, seed)
     nxt = {order[i]: order[i + 1] for i in range(len(order) - 1)}
     nxt[order[-1]] = None
     a64 = isa == "aarch64"
-    assert not a64 or n_lines * 64 < 1 << 20, "b.ne back to the first line"
+    assert not a64 or n_lines * line_bytes < 1 << 20, "b.ne back to the first line"
     asm = [".text"]
     targets = []  # AArch64: barrier targets in traversal order, as line numbers (n_lines = tail)
     for v, period in enumerate(periods):
@@ -242,14 +267,14 @@ def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1, isa="r
             # distinct slots for up to 7168 jumps in a BTB on pc[2:15) (SimpleBTB with 32768 entries)
             w = 2 + (line >> 9) % 14
             tgt = f"fd{v}_l{nxt[line]}" if nxt[line] is not None else f"fd{v}_tail"
-            asm += [f".org {base} + {line * 64}", f"fd{v}_l{line}:"]
+            asm += [f".org {base} + {line * line_bytes}", f"fd{v}_l{line}:"]
             if line in barrier and a64:
                 asm += ["ldr x30, [x10], #8"] + ["nop"] * (w - 1) + ["ret"]
             elif line in barrier:
                 asm += [f"lla ra, {tgt}"] + ["nop"] * (w - 2) + ["ret"]
             else:
                 asm += ["nop"] * w + [f"{'b' if a64 else 'j'} {tgt}"]
-        asm += [f".org {base} + {n_lines * 64}", f"fd{v}_tail:"]
+        asm += [f".org {base} + {n_lines * line_bytes}", f"fd{v}_tail:"]
         if a64:
             asm += ["subs x0, x0, #1", "mov x10, x11", f"b.ne fd{v}_l{order[0]}", "ldr x30, [sp], #16", "ret"]
         else:
@@ -261,7 +286,7 @@ def fdip_source(periods=0, n_lines=7168, iters=1, reps=2, warm=1, seed=1, isa="r
                 "ret",
             ]
     if a64:
-        return _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter)
+        return _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter, line_bytes)
     decl = "\n".join(f"extern void fd_kern{v}(long laps);" for v in range(len(periods)))
     runs = "\n".join(
         f"""    fd_kern{v}({warm});
@@ -286,7 +311,7 @@ int main(void) {{
     )
 
 
-def _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter):
+def _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter, line_bytes=64):
     isa = "aarch64"
     decl = []
     for v, t in enumerate(targets):
@@ -296,7 +321,7 @@ def _fdip_a64(asm, periods, targets, n_lines, iters, reps, warm, counter):
             f"static const unsigned short fd{v}_bt[] = {{ {', '.join(map(str, t)) or '0'} }};",
         ]
     runs = "\n".join(
-        f"""    for (unsigned i = 0; i < {len(t)}; i++) bt[i] = fd{v}_lines + 64 * fd{v}_bt[i];
+        f"""    for (unsigned i = 0; i < {len(t)}; i++) bt[i] = fd{v}_lines + {line_bytes} * fd{v}_bt[i];
     fd_kern{v}({warm}, bt);
     for (int r = 0; r < {reps}; r++) {{
         uint64_t t0 = cyc();

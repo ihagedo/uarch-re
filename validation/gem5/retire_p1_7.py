@@ -12,14 +12,13 @@ CONTROLS run at commitWidth 8 with another stage changed; a retire method reads 
 import argparse
 import json
 import os
-import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from sched_common import ROOT, run_multi, config_truth, iq_set
+from sched_common import ROOT, run_multi, config_truth, iq_set, warm
 from uarchre.kernels.scheduler import retire_drain, nop_stream, from_window
 from uarchre.kernels.window import window_probe
 
@@ -39,12 +38,6 @@ STREAM_K = [64, 128, 192, 256]
 DRAIN_BASE = {"numROBEntries": 512, "numPhysIntRegs": 80}  # int headroom 48 (ARM 38) < 64 adds
 WINDOW_BASE = {"numROBEntries": 64}
 ARM_WIDTHS = [2, 4, 6, 8]  # --isa aarch64 validates the AArch64 kernels: these widths, control F4C8
-
-
-def warm(cycles):
-    """Median over inner reps after the first (rep 0 pays cold I-cache misses)."""
-    c = cycles[1:] if len(cycles) > 1 else cycles
-    return float(statistics.median(c))
 
 
 def launches():

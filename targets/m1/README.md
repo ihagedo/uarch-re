@@ -2,8 +2,9 @@
 
 `m1_sweep.py` runs the window probe (`uarchre/kernels/window.py`) on a
 performance core of an Apple silicon Mac, timing only, no root, and writes the
-same result files as `./sweep.py`. It is untested on a Mac, so expect small
-fixes on the first run.
+same result files as `./sweep.py`. `m1_kernels.py` runs every other kernel
+(caches, TLBs, MLP, store sets, frontend, predictors, schedulers, retire).
+Neither has run on a Mac yet, so expect small fixes on the first run.
 
 Matching the published numbers needs M1-generation silicon (M1, M1 Pro, Max or
 Ultra). Later chips have fewer retire rows and different queue sizes.
@@ -25,9 +26,10 @@ Ultra). Later chips have fewer retire rows and different queue sizes.
   driver refuses to run on battery, in Low Power Mode, under Rosetta, or with a
   load average above 2 (`--force` runs anyway and records why).
 - Xcode Command Line Tools for `clang`: `xcode-select --install`.
-- A native arm64 Python 3.9+ with numpy, PyYAML and matplotlib.
-  `python3 -c "import platform; print(platform.machine())"` must print `arm64`.
-  Then `python3 -m pip install --user numpy pyyaml matplotlib`.
+- A native arm64 Python 3.10+ with numpy, PyYAML and matplotlib, from
+  python.org or Homebrew (`brew install python`); the Xcode `python3` is 3.9,
+  too old. `python3 -c "import platform; print(platform.machine())"` must print
+  `arm64`. Then `python3 -m pip install --user numpy pyyaml matplotlib`.
 - ~1 GB of free memory (two 256 MiB chains per launch) and ~1 GB of disk for
   compiled kernels in `build/native/`.
 
@@ -62,6 +64,21 @@ tar czf m1-results.tgz results/m1
 `python3 targets/m1/m1_sweep.py -h` lists the options (`--outer-reps`,
 `--inner-reps`, `--iters`, `--chain-mb`, `--min-ghz`, `--max-drift`,
 `--retries`, `--seed`, ...).
+
+## The other kernels
+
+```sh
+python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~40 in all)
+python3 targets/m1/m1_kernels.py run all --tag m1
+python3 targets/m1/m1_kernels.py run fp P3.6     # one family, some PoCs
+```
+
+Each launch sits between two add-chain clock probes: ticks become core cycles,
+and a launch that ran slow (an E-core, throttling, a migration) is retried.
+Results go to `results/m1/<tag>/<family>/<poc>/{raw,summary,run}.json` and are
+packed into `results/m1/<tag>.tgz`; every summary row puts the measured value
+next to the published one. Without a Mac, `--gem5-smoke` runs the same
+binaries under gem5 ARM as a functional test.
 
 ## Output
 

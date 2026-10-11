@@ -107,6 +107,22 @@ def hinge(ks, ts):
     return best[1], best[2]
 
 
+def reading(ks, ts):
+    """Saturated MLP: floor of the median K T(1) / T(K) over the last 6 K; hinge knee; FLAT, CONSIST flags."""
+    c, _ = hinge(ks, ts)
+    rise = float(np.interp(c, ks, ts)) / ts[0]
+    mlp = [k * ts[0] / t for k, t in zip(ks, ts)]
+    plateau = float(np.median(mlp[-6:]))
+    why = []
+    if rise > FLAT:
+        why.append(f"T up {rise - 1:.0%} at the knee")
+    if abs(plateau / c - 1) > CONSIST:
+        why.append(f"saturated MLP {plateau:.1f} != knee {c}")
+    return dict(
+        knee=c, rise=rise, plateau=plateau, reading=float(np.floor(plateau)), flagged=bool(why), why=why
+    )
+
+
 OUT_ARM = os.path.join(RESULTS, "arm-memory-mlp", "far.json")
 # scalar FP draws on the vector register pool on ARM
 ARM_PARAMS = {**PARAMS, "numPhysVecRegs": 512}

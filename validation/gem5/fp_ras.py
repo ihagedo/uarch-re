@@ -17,6 +17,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log, g5
+from fp_common import depth_marginal as marginal
 from uarchre.kernels.predictors import ras_source
 from uarchre.analysis.knee import find_knee
 from uarchre.analysis.anomaly import band_knee
@@ -49,12 +50,6 @@ def run_one(job):
         "stats": st,
         "T": {d: v for d, v in pts.items()},
     }
-
-
-def marginal(T):
-    """{D: median cycles} -> {D: T(D) - T(D-1)} for D >= 2."""
-    ds = sorted(T)
-    return {d: T[d] - T[d - 1] for d in ds if d - 1 in T}
 
 
 def analyze(raw):

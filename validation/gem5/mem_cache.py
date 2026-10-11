@@ -112,6 +112,20 @@ def detect_capacity(fine_rec, coarse_levels):
     return plateau_onset(xs, ys, lo_level, hi_level, frac=0.1), (xs, ys)
 
 
+def line_size(xs, ys):
+    """First D where the pair cost passes half the step from the smallest D to the largest."""
+    pts = sorted(zip(xs, ys))
+    lo, hi = pts[0][1], pts[-1][1]
+    return next((int(x) for x, y in pts if y > lo + 0.5 * (hi - lo)), None)
+
+
+def assoc_onset(xs, ys):
+    """Last K of a one-set chain still at the K = 1 level (+10% of the step to the highest level)."""
+    pts = sorted(zip(xs, ys))
+    last, _ = plateau_onset([x for x, _ in pts], [y for _, y in pts], pts[0][1], max(ys), frac=0.1)
+    return None if last is None else int(last)
+
+
 L1_LAT = [1, 2, 3, 4, 6]
 L2_LAT = [5, 10, 15, 20, 30]
 

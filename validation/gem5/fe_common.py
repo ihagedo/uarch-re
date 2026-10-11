@@ -99,11 +99,21 @@ def _watchdog():
             print("watchdog error", e, flush=True)
 
 
-threading.Thread(target=_watchdog, daemon=True).start()
+_WATCH = threading.Lock()
+_watching = []
+
+
+def _start_watchdog():
+    """Started by the first run_fe, so importing this module (targets/m1) starts nothing."""
+    with _WATCH:
+        if not _watching:
+            _watching.append(threading.Thread(target=_watchdog, daemon=True))
+            _watching[0].start()
 
 
 def run_fe(k, laps=1, reps=3, seed=0, mode=0, params=None, sets=(), config_args=(), stats=()):
     """Returns dict(cpu=[cycles/unit per measured rep], ipc=[...], outdir, stats={name: value})."""
+    _start_watchdog()
     b = build(k)
     argv = [laps, reps, seed, mode]
     key = hashlib.md5(
@@ -216,17 +226,17 @@ def plateau(ns, y, tau, start=3):
     return base
 
 
-def capacity_search(measure, coarse, step=1, kary=12, log=print, tag=""):
-    """Capacity onset of a set-associative structure; measure(n) -> cycles per item.
+def capacity_search(measure, coarse, step=1, kary=12, log=print, tag="", jobs=16, tau_min=0.0):
+    """Capacity onset of a set-associative structure; measure(n) -> cycles per item, `jobs` at a time.
 
-    tau is half the per-item miss cost on the coarse grid; the bracket [last n with
-    lap excess <= tau, first n above] is split into kary+1 parts until `step` wide."""
+    tau is half the per-item miss cost on the coarse grid, at least tau_min (a noise floor); the bracket
+    [last n with lap excess <= tau, first n above] is split into kary+1 parts until `step` wide."""
     from uarchre.kernels.frontend import lap_excess, onset
 
-    pts = dict(zip(coarse, pmap(measure, coarse)))
+    pts = dict(zip(coarse, pmap(measure, coarse, jobs)))
     ns = sorted(pts)
     y = [pts[n] for n in ns]
-    tau = 0.5 * (y[-1] - min(y))
+    tau = max(0.5 * (y[-1] - min(y)), tau_min)
     base = plateau(ns, y, tau)
     res = {"points": pts, "base": base, "tau": tau, "rounds": 1, "bracket": None, "coarse_bracket": None}
     if tau <= 0.05 * min(y):
@@ -248,7 +258,7 @@ def capacity_search(measure, coarse, step=1, kary=12, log=print, tag=""):
         cand = [c for c in cand if lo < c < hi and c not in pts]
         if not cand:
             break
-        pts.update(zip(cand, pmap(measure, cand)))
+        pts.update(zip(cand, pmap(measure, cand, jobs)))
         res["rounds"] += 1
         br = bracket()
         if log:

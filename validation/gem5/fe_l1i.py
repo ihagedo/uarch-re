@@ -3,8 +3,8 @@
 
 Capacity: straight_nops(F), F bytes of NOP, NOP, fadd.d (fetch-bound; NOPs alone are
 ALU-bound on gem5 and the window hides the first set's misses), --l1i 16-128 kB 8-way;
-capacity_search() over F / 64 lines. Latency: jump_chain(512) with icache tag and data
-latency L = 1..4; each taken jump should cost one more cycle per cycle of L.
+capacity_search() over F / line lines (`line` 64 B by default). Latency: jump_chain(512) with
+icache tag and data latency L = 1..4; each taken jump should cost one more cycle per cycle of L.
 
     . tools/env.sh && python3 validation/gem5/fe_l1i.py [--isa aarch64] [l1i<kB> ...] [latency]
 """
@@ -33,28 +33,28 @@ LAT = [1, 2, 3, 4]
 ARM = {"sizes": [16, 64, 128], "lat": [1, 3]}  # --isa aarch64: a reduced sweep
 
 
-def run_size(kb, isa="riscv64"):
+def run_size(kb, isa="riscv64", line=64):
     cargs = ["--l1i", f"{kb}kB", "--l2", "1MB"]  # every footprint fits twice in L2
     sp = SPELLING[isa]
 
     def measure(n):
         r = run_fe(
-            straight_nops(64 * n, isa=sp),
+            straight_nops(line * n, isa=sp),
             laps=laps_for(n),
             reps=REPS,
             config_args=cargs,
             stats=["system.cpu.icache.overallMisses::total"],
         )
-        return med(r["cpu"]) * 64  # cycles per line
+        return med(r["cpu"]) * line  # cycles per line
 
-    r = run_fe(straight_nops(64 * GRID[0], isa=sp), laps=laps_for(GRID[0]), reps=REPS, config_args=cargs)
+    r = run_fe(straight_nops(line * GRID[0], isa=sp), laps=laps_for(GRID[0]), reps=REPS, config_args=cargs)
     got = config_value(r["outdir"], "system.cpu.icache", "size")
     assert got == str(kb * 1024), (kb, got)
     res = capacity_search(measure, GRID, step=1, log=print, tag=f"l1i{kb}")
     out = {
         "name": f"l1i{kb}",
         "truth_bytes": kb * 1024,
-        "truth_lines": kb * 16,
+        "truth_lines": kb * 1024 // line,
         "points": {str(k): v for k, v in sorted(res["points"].items())},
         "base": res["base"],
         "tau": res["tau"],
@@ -65,7 +65,7 @@ def run_size(kb, isa="riscv64"):
         "error": res.get("error"),
     }
     write_json(os.path.join(out_dir("fe-l1i", isa), f"l1i{kb}.json"), out)
-    print(f"l1i {kb} kB: truth {kb * 16} lines, bracket {res['bracket']}", flush=True)
+    print(f"l1i {kb} kB: truth {kb * 1024 // line} lines, bracket {res['bracket']}", flush=True)
     return out
 
 

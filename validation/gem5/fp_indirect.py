@@ -17,8 +17,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fp_common import RESULTS, run_points, config_value, pmap, save_json, load_json, log, g5
+from fp_common import site_marginal as marginal, site_knee as knee_cfg
 from uarchre.kernels.predictors import indirect_source
-from uarchre.analysis.anomaly import band_knee
 from uarchre.viz import tolerance
 
 OUT = os.path.join(RESULTS, "fp-indirect")
@@ -68,12 +68,6 @@ def run_sizes(cfg, sizes, phase, rounds=8, reps=2):
     }
 
 
-def marginal(T):
-    """{S: cycles per round} -> {S: per-site cost of the sites added since the previous grid point}."""
-    ss = sorted(T)
-    return {b: (T[b] - T[a]) / (b - a) for a, b in zip(ss, ss[1:])}
-
-
 def merged(runs, cfg, phases=("coarse", "fine")):
     """{S: [cycles per round per rep]} over the given phases of one configuration."""
     T = {}
@@ -82,13 +76,6 @@ def merged(runs, cfg, phases=("coarse", "fine")):
             for s, v in r["pts"].items():
                 T[int(s)] = v
     return T
-
-
-def knee_cfg(T):
-    nrep = min(len(v) for v in T.values())
-    margs = [marginal({s: v[i] for s, v in T.items()}) for i in range(nrep)]
-    ss = sorted(margs[0])
-    return band_knee({s: [m[s] for m in margs] for s in ss}), margs
 
 
 def campaign():

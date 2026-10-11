@@ -12,7 +12,6 @@ preloaded before the Y fillers) and dispatch (Handley's probe, S adds then M fad
 import argparse
 import json
 import os
-import statistics
 import sys
 import threading
 import time
@@ -20,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from sched_common import ROOT, run_multi, config_truth, iq_set
+from sched_common import ROOT, run_multi, config_truth, iq_set, warm
 from uarchre.kernels.scheduler import sched_probe, dispatch_probe, CLASSES, ASM_EMITTERS
 
 OUT = os.path.join(ROOT, "results", "gem5", "sched-p1_5")
@@ -62,12 +61,6 @@ def paired(a0, a1, f, ld, s):
 def capacity(layout, cls):
     a0, a1, f, ld, s = LAYOUTS[layout]
     return {"add": a0 + a1, "mul": a1, "fp": f, "load": ld + s, "store": s}[cls]
-
-
-def warm(cycles):
-    """Median over inner reps after the first (rep 0 runs the point's code cold)."""
-    c = cycles[1:] if len(cycles) > 1 else cycles
-    return float(statistics.median(c))
 
 
 def pmap(f, xs):

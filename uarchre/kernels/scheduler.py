@@ -33,6 +33,7 @@ A64_CLASSES = {  # gem5 ARM op classes: scalar FP is Float*, not Simd*
     "add": ("IntAlu", "add {r}, {g}, x6"),
     "mul": ("IntMult", "mul {r}, {g}, x7"),
     "fp": ("FloatMisc", "fmov {f}, {g}"),
+    "fadd": ("FloatAdd", "fadd {f}, {fh}, d30"),
     "load": ("MemRead", "ldr {r}, [{h}, #{o}]"),
     "store": ("MemWrite", "str x6, [{h}, #{o}]"),
 }
@@ -58,7 +59,16 @@ SPELL = {
         "classes": A64_CLASSES,
         "miss": "ldr %{g}, [%{g}]",
         "addr": ["lsr {h}, %{g}, #63", "add {h}, {h}, %3"],
-        "indep": {"add": "add {r}, x6, x7", "fp": "fadd {f}, d30, d31", "mul": "mul {r}, x6, x7"},
+        # fadd fillers' source: x6's bits (a normal double) moved over once per group, after the miss
+        "fhelper": ["d24", "d25"],
+        "fmov": ["add {x}, x6, %{g}, lsr #63", "fmov {fh}, {x}"],
+        "xhelper": ["x19", "x20"],
+        "indep": {
+            "add": "add {r}, x6, x7",
+            "fp": "fadd {f}, d30, d31",
+            "mul": "mul {r}, x6, x7",
+            "nop": "nop",
+        },
         "delay": "fsqrt d24, d24",
     },
 }
@@ -120,6 +130,7 @@ def dep_op(cls, i, group, isa="riscv64"):
         g=f"%{group}",
         h=sp["helper"][group],
         o=sp["offsets"][i % len(sp["offsets"])],
+        fh=sp["fhelper"][group] if "fhelper" in sp else None,
     )
 
 
@@ -131,6 +142,8 @@ def sched_probe(filler, n, pre=None, m=0, isa="riscv64"):
         lines.append(sp["miss"].format(g=g))
         if filler in MEMORY or pre in MEMORY:  # same overhead at every m of a sharing test
             lines += [ln.format(h=sp["helper"][g], g=g) for ln in sp["addr"]]
+        if "fadd" in (filler, pre):
+            lines += [ln.format(x=sp["xhelper"][g], g=g, fh=sp["fhelper"][g]) for ln in sp["fmov"]]
         lines += [dep_op(pre, i, g, isa) for i in range(m)] if pre else []
         lines += [dep_op(filler, m + i, g, isa) for i in range(n)]
     tag = f"_{pre}{m}" if pre and m else ""

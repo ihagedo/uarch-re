@@ -572,6 +572,7 @@ _A64_CYCLES = r"""
 #include <unistd.h>
 @COUNTER@
 #define PAGE_BYTES ((size_t)sysconf(_SC_PAGESIZE))
+__attribute__((constructor)) static void uarchre_page_bytes(void) { printf("page_bytes %zu\n", PAGE_BYTES); }
 @GEM5@
 static void *chase2(void *p, void **q) {
     void *b = *q;
@@ -612,14 +613,17 @@ __attribute__((constructor)) static void uarchre_clock_ratio(void) {
 }"""
 
 _A64_CODE = r"""
-/* code <njumps> <reps> P...: a 4-instruction stub in each of P code pages (line rotated as in
-   `page`), in random cyclic order; a stub counts x0 down, returns at 0, else branches to the next */
+/* code <njumps> <reps> [d=1] P...: a 4-instruction stub in each of P code pages (line rotated as in
+   `page`), in random cyclic order; a stub counts x0 down, returns at 0, else branches to the next.
+   d=1: stubs packed one per 128 B line (same branches and lines, few pages): the iTLB control */
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
 #endif
+static int code_dense = 0;
 static uint32_t *stub(char *code, size_t i) {
     size_t lpp = PAGE_BYTES / 128;
+    if (code_dense) return (uint32_t *)(code + i * 128);
     return (uint32_t *)(code + i * PAGE_BYTES + ((i + i / lpp) % lpp) * 128);
 }
 static int code_main(int argc, char **argv) {
@@ -636,6 +640,7 @@ static int code_main(int argc, char **argv) {
     char *code = mmap(0, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
     if (code == MAP_FAILED) { perror("mmap"); return 1; }
     for (int a = 4; a < argc; a++) {
+        if (!strncmp(argv[a], "d=", 2)) { code_dense = atoi(argv[a] + 2); continue; }
         size_t P = parse(argv[a]);
         if (P < 2) continue;
         size_t *perm = cyclic(P, 0x5151 + P);
@@ -682,7 +687,7 @@ _A64 = {  # 128 B lines and the OS page size (16 KiB on Apple silicon); the code
     "@PAGE@": "OS",
     "@MLP_USAGE@": "     mlp <F> <iters> <reps> <seed> [x=<bytes>] [n=<bytes>] K...    "
     "K chains, n-byte nodes (128)\n"
-    "     code <njumps> <reps> P...                                    a jump chain over P code pages",
+    "     code <njumps> <reps> [d=1] P...                              a jump chain over P code pages",
     "@MODES@": '    } else if (!strcmp(mode, "code")) {\n        return code_main(argc, argv);\n',
 }
 _A64_WARM = {
