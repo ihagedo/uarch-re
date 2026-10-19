@@ -54,10 +54,14 @@
    }
   ],
   "direction_predictor": {
-   "history_bits": null,
+   "history_bits": 100,
    "algorithm": "tage-like",
-   "provenance": "speculative",
-   "note": "history length and capacity unknown"
+   "provenance": "inferred",
+   "sources": [
+    "chen-qu-zhang-2024",
+    "tuby-morrison-2025"
+   ],
+   "note": "path history of the last 100 taken branches; six tagged tables"
   },
   "ras_depth": {
    "value": null,
@@ -339,55 +343,61 @@
    {
     "name": "int1",
     "ops": "alu ubfm/sbfm flags branch adr mrs",
-    "scheduler_entries": null,
+    "scheduler_entries": 24,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "int2",
     "ops": "alu ubfm/sbfm flags branch adr indirect ptrauth",
-    "scheduler_entries": null,
+    "scheduler_entries": 26,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "int3",
     "ops": "alu ubfm/sbfm flags mov-from-simd?",
-    "scheduler_entries": null,
+    "scheduler_entries": 16,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "int4",
     "ops": "alu ubfm/sbfm mov-from-simd?",
-    "scheduler_entries": null,
+    "scheduler_entries": 12,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "int5",
     "ops": "alu ubfm/sbfm mul div",
-    "scheduler_entries": null,
+    "scheduler_entries": 28,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "int6",
     "ops": "alu ubfm/sbfm mul madd crc bfm/extr",
-    "scheduler_entries": null,
+    "scheduler_entries": 28,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
@@ -429,37 +439,41 @@
    {
     "name": "fp11",
     "ops": "fp/simd",
-    "scheduler_entries": null,
+    "scheduler_entries": 36,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "fp12",
     "ops": "fp/simd",
-    "scheduler_entries": null,
+    "scheduler_entries": 36,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "fp13",
     "ops": "fp/simd fcsel to-gpr",
-    "scheduler_entries": null,
+    "scheduler_entries": 36,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    },
    {
     "name": "fp14",
     "ops": "fp/simd fcsel to-gpr fcmp fdiv frecpe frsqrte sha",
-    "scheduler_entries": null,
+    "scheduler_entries": 36,
     "provenance": "inferred",
     "sources": [
-     "dougallj-firestorm"
+     "dougallj-firestorm",
+     "jiegec-firestorm"
     ]
    }
   ]

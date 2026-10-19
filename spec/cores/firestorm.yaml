@@ -16,8 +16,9 @@ frontend:
        note: "from third-party studies Handley cites, not his own M1 measurement"}
     - {name: l1i-as-btb, entries: null, taken_bubble_cycles: 2, provenance: inferred, sources: [handley-m1-explainer],
        note: "beyond L0 the L1I acts as the next tier"}
-  direction_predictor: {history_bits: null, algorithm: tage-like, provenance: speculative,
-                        note: "history length and capacity unknown"}
+  direction_predictor: {history_bits: 100, algorithm: tage-like, provenance: inferred,
+                        sources: [chen-qu-zhang-2024, tuby-morrison-2025],
+                        note: "path history of the last 100 taken branches; six tagged tables"}
   ras_depth:           {value: null, provenance: speculative}
   mispredict_penalty:  {value: 13, unit: cycles, provenance: inferred, sources: [7cpu-m1]}
 
@@ -78,20 +79,20 @@ backend:
                         provenance: inferred, sources: [dougallj-firestorm],
                         note: "M1 does not fuse NOP with the next instruction"}
   ports:
-    - {name: int1,  ops: "alu ubfm/sbfm flags branch adr mrs",          scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: int2,  ops: "alu ubfm/sbfm flags branch adr indirect ptrauth", scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: int3,  ops: "alu ubfm/sbfm flags mov-from-simd?",          scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: int4,  ops: "alu ubfm/sbfm mov-from-simd?",                scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: int5,  ops: "alu ubfm/sbfm mul div",                       scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: int6,  ops: "alu ubfm/sbfm mul madd crc bfm/extr",         scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: int1,  ops: "alu ubfm/sbfm flags branch adr mrs",          scheduler_entries: 24, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: int2,  ops: "alu ubfm/sbfm flags branch adr indirect ptrauth", scheduler_entries: 26, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: int3,  ops: "alu ubfm/sbfm flags mov-from-simd?",          scheduler_entries: 16, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: int4,  ops: "alu ubfm/sbfm mov-from-simd?",                scheduler_entries: 12, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: int5,  ops: "alu ubfm/sbfm mul div",                       scheduler_entries: 28, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: int6,  ops: "alu ubfm/sbfm mul madd crc bfm/extr",         scheduler_entries: 28, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
     - {name: ls7,   ops: "store amx",                                   scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
     - {name: ls8,   ops: "load/store amx",                              scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
     - {name: ls9,   ops: "load",                                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
     - {name: ls10,  ops: "load",                                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: fp11,  ops: "fp/simd",                                     scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: fp12,  ops: "fp/simd",                                     scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: fp13,  ops: "fp/simd fcsel to-gpr",                        scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
-    - {name: fp14,  ops: "fp/simd fcsel to-gpr fcmp fdiv frecpe frsqrte sha", scheduler_entries: null, provenance: inferred, sources: [dougallj-firestorm]}
+    - {name: fp11,  ops: "fp/simd",                                     scheduler_entries: 36, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: fp12,  ops: "fp/simd",                                     scheduler_entries: 36, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: fp13,  ops: "fp/simd fcsel to-gpr",                        scheduler_entries: 36, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
+    - {name: fp14,  ops: "fp/simd fcsel to-gpr fcmp fdiv frecpe frsqrte sha", scheduler_entries: 36, provenance: inferred, sources: [dougallj-firestorm, jiegec-firestorm]}
 
 memory:
   l1d:   {size_kib: 128, line_bytes: 64, ways: 8, latency_cycles: 3, provenance: inferred,

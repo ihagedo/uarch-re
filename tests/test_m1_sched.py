@@ -39,9 +39,10 @@ def pub(path):
 
 
 def class_capacity(cls):
-    """(published entries the class can use, dispatch buffer) or (None, buffer)."""
+    """([lo, hi] published entries the class can use, dispatch buffer) or (None, buffer)."""
     p, _, _ = ms.queue_published(cls)
     db = ms.QUEUES[cls][2]
+    p = p if p is None or isinstance(p, list) else [p, p]
     return p, pub(f"decoupling.dispatch_buffers.{db}") if db else 0
 
 
@@ -55,27 +56,28 @@ class TestSweepDesign(unittest.TestCase):
             p, db = class_capacity(cls)
             if p is None:
                 continue
-            self.assertLessEqual(lo, 0.7 * p, cls)
-            self.assertGreaterEqual(hi, 1.3 * (p + db), cls)
+            self.assertLessEqual(lo, 0.7 * p[0], cls)
+            self.assertGreaterEqual(hi, 1.3 * (p[1] + db), cls)
 
-    def test_unpublished_add_sweeps_widest(self):
-        self.assertIsNone(class_capacity("add")[0])
+    def test_add_sweeps_widest(self):
         lo, hi, _ = ms.SIZES["add"]
         self.assertLessEqual(lo, min(g[0] for g in ms.SIZES.values()))
         self.assertGreaterEqual(hi, max(g[1] for g in ms.SIZES.values()))
         self.assertLessEqual(lo, 0.7 * class_capacity("add")[1])
 
     def test_published_split(self):
-        self.assertEqual(ms.queue_published("mul")[:1], (26,))  # 2 x 13, paired
-        self.assertEqual(ms.queue_published("fp")[0], 72)
+        self.assertEqual(ms.queue_published("mul")[0], [26, 56])  # 2 x 13 paired, or 28 + 28 per port
+        self.assertEqual(ms.queue_published("fp")[0], [72, 144])
         self.assertEqual(ms.queue_published("load")[0], 48)
+        self.assertEqual(ms.queue_published("add")[0], 134)  # 24 + 26 + 16 + 12 + 28 + 28
+        self.assertIn("backend.ports (dougallj-firestorm, jiegec-firestorm)", ms.queue_published("add")[2])
         self.assertIn("dispatch buffer 12", ms.queue_published("mul")[1])
 
     def test_preloads_stay_below_their_own_queue(self):
         for x, y, mvals in ms.PAIRS:
             self.assertEqual(mvals[0], 0)
             p, _ = class_capacity(x)
-            cap = p if p is not None else ms.SIZES[x][1] / 2
+            cap = p[0] if p is not None else ms.SIZES[x][1] / 2
             self.assertLess(max(mvals), 0.85 * cap, (x, y))
             self.assertIn(y, ms.SIZES)
 
@@ -241,8 +243,8 @@ class TestAnalysis(unittest.TestCase):
             self.assertLessEqual(row["ci"][0], cap)
             self.assertGreaterEqual(row["ci"][1], cap)
             self.assertIn("offset 0 applied", row["note"])
-        self.assertEqual(got["scheduler.mul"]["published"], 26)
-        self.assertIsNone(got["scheduler.add"]["published"])
+        self.assertEqual(got["scheduler.mul"]["published"], [26, 56])
+        self.assertEqual(got["scheduler.add"]["published"], 134)
         self.assertEqual(raw["sizes"]["add"]["offset"], 0)
         json.dumps(raw, default=float)
 

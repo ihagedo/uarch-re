@@ -98,8 +98,8 @@ class TestPlan(unittest.TestCase):
     """Sweeps bracket the published values with 30 % to spare; unknown ones are swept wide."""
 
     def test_history_grid(self):
-        h = m1_fp.native.published("frontend.direction_predictor.history_bits") or m1_fp.HIST_PUBLISHED
-        self.assertEqual(m1_fp.HIST_PUBLISHED, 100)
+        h = m1_fp.native.published("frontend.direction_predictor.history_bits")
+        self.assertEqual(h, 100)
         self.assertGreaterEqual(sum(n + 1 <= 0.7 * h for n in m1_fp.HIST_GRID), 5)
         self.assertGreaterEqual(max(m1_fp.HIST_GRID) + 1, 2 * h)
 

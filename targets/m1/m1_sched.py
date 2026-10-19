@@ -44,20 +44,21 @@ SHARING_MIN_JUMP = 1.2  # a preload that spills into the probe's queue raises th
 # coarse grids (lo, hi, step): published queues plus dispatch buffer +-30 %, wide where unpublished
 SIZES = {
     "add": (8, 256, 8),
-    "mul": (8, 64, 4),
+    "mul": (8, 96, 4),
     "fp": (16, 192, 8),
     "fadd": (16, 192, 8),
     "load": (8, 96, 4),
     "store": (8, 96, 4),
 }
-# filler class -> (backend.scheduler_queues field, queues of that size it can use, dispatch buffer)
+# filler class -> (backend.scheduler_queues field, queues of that size it can use, dispatch buffer,
+# op of the backend.ports whose scheduler_entries it can use)
 QUEUES = {
-    "add": (None, 0, "int"),
-    "mul": ("mul", 2, "mul"),
-    "fp": ("fp", 4, None),
-    "fadd": ("fp", 4, None),
-    "load": ("ls", 1, "ls"),  # ls is the total, 4 x 12
-    "store": ("ls", 1, "ls"),
+    "add": (None, 0, "int", "alu"),
+    "mul": ("mul", 2, "mul", "mul"),
+    "fp": ("fp", 4, None, "fp/simd"),
+    "fadd": ("fp", 4, None, "fp/simd"),
+    "load": ("ls", 1, "ls", None),  # ls is the total, 4 x 12
+    "store": ("ls", 1, "ls", None),
 }
 PAIRS = [  # (preload class X, probe class Y, preloaded X ops), m below X's own capacity
     ("mul", "add", [0, 4, 8, 12, 16, 20]),
@@ -212,22 +213,42 @@ def cite(*paths):
     """firestorm.yaml fields with their citation keys."""
     out = []
     for path in paths:
-        keys = (native.published(path) or {}).get("sources", [])
+        node, keys = native.published(path) or {}, []
+        for n in node if isinstance(node, list) else [node]:
+            keys += [k for k in n.get("sources", []) if k not in keys]
         out.append(f"{path} ({', '.join(keys)})" if keys else path)
     return ", ".join(out)
 
 
+def port_entries(op):
+    """scheduler_entries of the backend.ports that run op, if all are published."""
+    e = [p["scheduler_entries"] for p in native.published("backend.ports") if op in p["ops"].split()]
+    return e if e and None not in e else []
+
+
 def queue_published(cls):
-    """(entries the class can use per firestorm.yaml or None, note, yaml fields)."""
-    q, count, db = QUEUES[cls]
+    """(entries the class can use per firestorm.yaml, a [lo, hi] range when sources differ, or None;
+    note, yaml fields)."""
+    q, count, db, op = QUEUES[cls]
     node = native.published(f"backend.scheduler_queues.{q}") if q else None
     dbn = native.published(f"decoupling.dispatch_buffers.{db}") if db else None
+    ports = port_entries(op) if op else []
     src = [f"backend.scheduler_queues.{q}"] if node else []
+    notes, pubs = [], []
     if node:
-        pub = node["value"] * count
-        note = f"published {f'{count} x ' if count > 1 else ''}{node['value']} ({node.get('note', '')})"
+        pubs.append(node["value"] * count)
+        notes.append(
+            f"published {f'{count} x ' if count > 1 else ''}{node['value']} ({node.get('note', '')})"
+        )
+    if ports:
+        pubs.append(sum(ports))
+        notes.append(f"per port {' + '.join(map(str, ports))}")
+        src.append("backend.ports")
+    if not pubs:
+        pub, notes = None, ["queue sizes not in firestorm.yaml"]
     else:
-        pub, note = None, "queue sizes not in firestorm.yaml"
+        pub = pubs[0] if min(pubs) == max(pubs) else [min(pubs), max(pubs)]
+    note = ", ".join(notes)
     if dbn:
         src.append(f"decoupling.dispatch_buffers.{db}")
         note += f", dispatch buffer {dbn['value']}"

@@ -30,8 +30,6 @@ A64 = "aarch64"
 GHZ = 3.2  # Firestorm clock, only to size iterations
 REPS = 3  # timed reps per point inside a launch
 
-# not in firestorm.yaml; two published studies find 100 taken branches
-HIST_PUBLISHED, HIST_SOURCE = 100, "Tuby and Morrison; Chen, Qu and Zhang"
 HIST_GRID = list(range(0, 257, 8))
 HIST_SEEDS = (0, 1, 2)
 IND_SIZES = sorted({round(8 * 2 ** (i / 4)) for i in range(45)})  # 8..16384 sites, 4 per octave
@@ -100,9 +98,8 @@ def history_summary(raw):
     seeds = sorted({x["seed"] for x in raw})
     per_seed = [history_frac([x for x in raw if x["seed"] == s]) for s in seeds]
     k, ns = history_knee(per_seed)
-    node = native.published("frontend.direction_predictor") or {}
-    pub = node.get("history_bits") or HIST_PUBLISHED
-    src = ", ".join(node.get("sources", [])) if node.get("history_bits") else HIST_SOURCE
+    node = native.published("frontend.direction_predictor")
+    pub, src = node["history_bits"], ", ".join(node["sources"])
     span = f"N {ns[0]}-{ns[-1]}" if ns else "no N with T_rand > T_const"
     note = f"last N on the low segment of 1 + f, + 1; {len(seeds)} LFSR seeds, {span}"
     return [row("frontend.direction_predictor.history", k, "taken branches", pub, src, note, offset=1)]

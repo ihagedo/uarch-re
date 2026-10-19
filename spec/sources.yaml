@@ -39,6 +39,21 @@ handley-aarch64-explore:
   url: https://www.7-cpu.com/cpu/Apple_M1.html
   kind: reverse-engineering
 
+jiegec-firestorm:
+  cite: Jiajie Chen, Firestorm diagram
+  url: https://github.com/jiegec/cpu/blob/master/docs/firestorm.d2
+  kind: reverse-engineering
+
+chen-qu-zhang-2024:
+  cite: 'Jiajie Chen, Peng Qu and Youhui Zhang, "Dissecting Conditional Branch Predictors of Apple Firestorm and Qualcomm Oryon for Software Optimization and Architectural Analysis"'
+  url: https://arxiv.org/abs/2411.13900
+  kind: reverse-engineering
+
+tuby-morrison-2025:
+  cite: 'Adam Tuby and Adam Morrison, "Reverse Engineering the Apple M1 Conditional Branch Predictor for Out-of-Place Spectre Mistraining"'
+  url: https://arxiv.org/abs/2502.10719
+  kind: reverse-engineering
+
 wong2013-rob:
   cite: Henry Wong, "Measuring Reorder Buffer Capacity"
   kind: method   # basis of the window probe; not a source of values
