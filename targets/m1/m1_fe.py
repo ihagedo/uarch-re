@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Frontend kernels on Apple silicon, timing only: P3.1 width, P3.2 L1i, P3.3 BTB levels, P3.7 mispredicts.
 
-    python3 targets/m1/m1_fe.py [P3.1 P3.2 P3.3 P3.7] [--tag m1] [--gem5-smoke]
+    python3 targets/m1/m1_fe.py [P3.1 P3.1-page P3.2 P3.2-ways P3.3 P3.7] [--tag m1] [--gem5-smoke]
 
 Kernels and analysis are the gem5 campaigns' (validation/gem5/fe_*.py). A point is several launches in
 shuffled order; capacity searches run serially with tau floored at TAU_SIGMAS x the bootstrapped noise.
@@ -23,20 +23,45 @@ import native  # noqa: E402
 sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5"))
 from fe_common import capacity_search, geom_grid  # noqa: E402
 from uarchre.kernels.frontend import A64, harness_c, jump_chain, lap_excess, onset, parse_reps  # noqa: E402
-from uarchre.kernels.frontend import random_branches, straight_nops, width_estimate, width_loop  # noqa: E402
+from uarchre.kernels.frontend import page_loop, random_branches, step_period, straight_nops  # noqa: E402
+from uarchre.kernels.frontend import stride_chain_source, width_estimate, width_loop  # noqa: E402
+from uarchre.kernels.predictors import parse_points  # noqa: E402
 
 FAMILY = "fe"
-LINE = 128  # M1 L1i line, bytes
 FILLERS = ("nop", "mix")
 TAU_SIGMAS = 5
 N_BOOT = 1000
 
-# work: core cycles per timed rep at the peak rate (2^23: 2.6 ms at 3.2 GHz); rep 0 of a launch is dropped
+# work: core cycles per timed rep at the peak rate (2^23: 2.6 ms at 3.2 GHz); rep 0 of a launch is dropped.
+# l1i grid and step in bytes. page: the loop starts `split` instructions before a page boundary, or before
+# an `inside` boundary for the control; extra_L: lengths both run below the rename limit
 M1 = {
     "reps": 9,
     "outer": 5,
     "width": {"Ls": list(range(2, 17)), "laps": 1 << 23},
-    "l1i": {"grid": geom_grid(384, 4096, 4), "work": 1 << 23, "min_laps": 16, "step": 1, "kary": 12},
+    "page": {
+        "Ls": list(range(2, 65)),
+        "laps": 1 << 22,
+        "page": 16 << 10,
+        "inside": 2 << 10,
+        "split": 1,
+        "extra_L": 8,
+    },
+    "l1i": {
+        "grid": geom_grid(48 << 10, 512 << 10, 4, 128),
+        "work": 1 << 23,
+        "min_laps": 16,
+        "step": 64,
+        "kary": 12,
+    },
+    # N <= 24 lines on N pages, far below the iTLB; the jumps take 16 word slots, so few share a BTB set
+    "ways": {
+        "strides": [16 << 10, 32 << 10, 64 << 10],
+        "ns": list(range(2, 25)),
+        "work": 1 << 22,
+        "reps": 5,
+        "launches": 8,
+    },
     "jump": {"n": 512, "seeds": [0, 1, 2], "laps": 1 << 14},
     "btb": {
         "grid": geom_grid(128, 4096, 4),
@@ -50,12 +75,27 @@ M1 = {
     },
     "mispredict": {"words": 16384, "seeds": list(range(8)), "pattern_launches": 3, "pattern_laps": 16},
 }
-# gem5's default O3: 32 kB L1i, an effective 1024-entry BTB
+# gem5's default O3: 32 kB 8-way L1i (4 KiB a way), an effective 1024-entry BTB
 SMOKE = {
     "reps": 3,
     "outer": 1,
     "width": {"Ls": [2, 4, 8, 9, 12, 16], "laps": 4000},
-    "l1i": {"grid": [64, 96, 128, 192, 256, 384, 512], "work": 1 << 15, "min_laps": 4, "step": 32, "kary": 3},
+    "page": {**M1["page"], "Ls": [2, 4, 6, 8, 9, 10, 12, 16, 17, 18, 20, 24, 26], "laps": 2000},
+    "l1i": {
+        "grid": [n << 7 for n in (64, 96, 128, 192, 256, 384, 512)],
+        "work": 1 << 15,
+        "min_laps": 4,
+        "step": 4096,
+        "kary": 3,
+    },
+    "ways": {
+        **M1["ways"],
+        "strides": [2 << 10, 4 << 10, 8 << 10],
+        "ns": list(range(2, 22)),
+        "work": 1 << 10,
+        "reps": 2,
+        "launches": 1,
+    },
     "jump": {"n": 512, "seeds": [0], "laps": 64},
     "btb": {
         "grid": geom_grid(256, 4096, 2),
@@ -239,17 +279,86 @@ def run_width(r, args):
     return raw, summary
 
 
+def run_page(r, args):
+    """P3.1-page: page_loop(L) starting just before a page boundary vs the same loop before a boundary
+    inside a page; step_period of the crossing curve is the fetch block, the gap at small L the page cost."""
+    p = plan(r)
+    g, line = p["page"], native.l1i_line(args)
+    if g["inside"] % line or g["page"] % g["inside"]:
+        raise ValueError(f"control boundary {g['inside']} B: not a line boundary inside a page")
+    offs = {"cross": g["page"] - 4 * g["split"], "inside": g["inside"] - 4 * g["split"]}
+    Ls, pts = g["Ls"], {}
+    jobs = [(w, L) for w in offs for L in Ls]
+    for w, L in random.Random(0).sample(jobs, len(jobs)):
+        pts[w, L] = point(r, page_loop(L, offs[w], g["page"], isa=A64), g["laps"], p["reps"], p["outer"])
+    rate = published("backend.rename_width")[0]
+
+    def curve(w, o=None):
+        return [value(pts[w, L]) if o is None else statistics.median(pts[w, L][o]["cpu"]) for L in Ls]
+
+    ok = [o for o in range(p["outer"]) if all(x[o]["accepted"] for x in pts.values())] or range(p["outer"])
+    fit = step_period(Ls, curve("cross"), curve("inside"), rate)
+    per = [step_period(Ls, curve("cross", o), curve("inside", o), rate) for o in ok]
+    small = [i for i, L in enumerate(Ls) if L <= g["extra_L"]]
+    extra = [
+        statistics.median(c[i] - n[i] for i in small)
+        for c, n in ((curve("cross", o), curve("inside", o)) for o in ok)
+        if small
+    ]
+    periods = [f["period"] for f in per]
+    found = [x for x in periods if x]
+    flags = unaccepted(pts.values())
+    if len(set(periods + [fit["period"]])) > 1:
+        flags.append("period: launches disagree")
+    h = fit["heights"]
+    note = (
+        f"loop from {4 * g['split']} B before a {g['page'] >> 10} KiB page, so the blocks after it align; "
+        f"steps every 16: 16 per fetch, every 8: 8 wide; heights {h[8]:.2f} per 8, {h[16]:.2f} per 16"
+    )
+    summary = [
+        row(
+            "frontend.fetch_width[page]",
+            fit["period"],
+            [min(found), max(found)] if found else None,
+            "instr/fetch",
+            published("frontend.fetch_width"),
+            flags,
+            note,
+        ),
+        row(
+            "frontend.page_cross_cycles",
+            statistics.median(extra) if extra else None,
+            [min(extra), max(extra)] if extra else None,
+            "cycles",
+            (None, ""),
+            unaccepted(pts.values()),
+            f"crossing minus inside a page at L <= {g['extra_L']}: 1 if a fetch stops at the page",
+        ),
+    ]
+    raw = {
+        "plan": g,
+        "line": line,
+        "rate": rate,
+        "points": [{"where": w, "L": L, "offset": offs[w], "launches": pts[w, L]} for w, L in jobs],
+        "fit": fit,
+        "per_launch": per,
+        "extra": extra,
+    }
+    return raw, summary
+
+
 def run_l1i(r, args):
-    """P3.2: straight_nops over n lines of LINE bytes (capacity); jump_chain cycles per taken jump."""
+    """P3.2: straight_nops over n L1i lines (capacity); jump_chain cycles per taken jump."""
     p = plan(r)
     c, j = p["l1i"], p["jump"]
+    line = native.l1i_line(args)
     res, pts = search(
         r,
-        lambda n: straight_nops(LINE * n, isa=A64),
-        lambda n: max(c["min_laps"], c["work"] * 32 // (LINE * n)),  # 32 B of code per cycle at 8 wide
-        c["grid"],
-        LINE,
-        c["step"],
+        lambda n: straight_nops(line * n, isa=A64),
+        lambda n: max(c["min_laps"], c["work"] * 32 // (line * n)),  # 32 B of code per cycle at 8 wide
+        sorted({b // line for b in c["grid"]}),
+        line,
+        max(1, c["step"] // line),
         c["kary"],
         "l1i",
     )
@@ -257,9 +366,9 @@ def run_l1i(r, args):
         s: point(r, jump_chain(j["n"], s, isa=A64), j["laps"], p["reps"], p["outer"]) for s in j["seeds"]
     }
     cap = capacity(res)
-    kib = LINE / 1024
+    kib = line / 1024
     y_in = statistics.median(res["points"][n] for n in res["base"])
-    note = f"{cap} lines of {LINE} B; " if cap else ""
+    note = f"{cap} lines of {line} B; " if cap else ""
     note += f"cycles per line: {y_in:.2f} inside, {res['points'][max(pts)]:.2f} at {max(pts)} lines"
     per_seed = [value(v) for v in jumps.values()]
     tbpc, src = published("frontend.taken_branches_per_cycle")
@@ -284,12 +393,72 @@ def run_l1i(r, args):
         ),
     ]
     raw = {
-        "plan": {"l1i": c, "jump": j, "line": LINE},
+        "plan": {"l1i": c, "jump": j, "line": line},
         "search": plain(res),
         "points": {str(n): v for n, v in sorted(pts.items())},
         "jump": {str(s): v for s, v in jumps.items()},
     }
     return raw, summary
+
+
+WAYS_NOTES = {
+    16 << 10: "12: 12 ways or 6 ways virtually indexed; 6-12, moving by launch: 6 ways physically indexed",
+    32 << 10: "6: 6 ways; 12: 12 ways; 6-12, moving by launch: 6 ways physically indexed",
+    64 << 10: "control: as 32 KiB unless a way holds more than 32 KiB",
+}
+
+
+def ways_knee(ns, cpu):
+    """capacity_search over one launch's cycles per jump {N: [reps]}: (last N without misses, result)."""
+    y = {n: statistics.median(cpu[n]) for n in ns}
+    lo, hi = min(y.values()), max(y.values())
+    flat = [n for n in ns if y[n] <= lo + 0.25 * (hi - lo)]
+    tau_min = TAU_SIGMAS * max(n * float(np.std(cpu[n])) for n in flat)
+    res = capacity_search(y.__getitem__, sorted(ns), step=1, log=None, jobs=1, tau_min=tau_min)
+    return capacity(res), res
+
+
+def run_ways(r, args):
+    """P3.2-ways: stride_chain_source, N one-jump lines S apart on fresh pages per launch; the knee in N is
+    the lines one L1i set holds (ways if S >= a way, twice that at half a way), one knee per launch."""
+    p = plan(r)
+    w, line = p["ways"], native.l1i_line(args)
+    b = r.compile(stride_chain_source(r.counter), "fe_ways")
+    jobs = [(s, seed) for s in w["strides"] for seed in range(w["launches"])]
+    launches = {s: [] for s in w["strides"]}
+    for s, seed in random.Random(0).sample(jobs, len(jobs)):
+        ns = random.Random(seed).sample(w["ns"], len(w["ns"]))
+        out, ratio = r.launch(b, [w["work"], w["reps"], seed, s, line, *ns], label=f"fe_ways_s{s}")
+        got = parse_points(out)
+        if sorted(got) != sorted(map(str, w["ns"])) or any(len(v) != w["reps"] for v in got.values()):
+            raise RuntimeError(f"fe_ways: expected {w['reps']} reps per N, got:\n{out[-1500:]}")
+        cpu = {n: [t / ratio for t in got[str(n)]] for n in w["ns"]}
+        launches[s].append(
+            {"seed": seed, "ratio": ratio, "accepted": bool(r.attempts[-1]["accepted"]), "cpu": cpu}
+        )
+    summary, lo, hi = [], min(w["ns"]), max(w["ns"])
+    for s in w["strides"]:
+        ls, flags, knees = accepted(launches[s]), unaccepted([launches[s]]), []
+        for x in ls:
+            x["knee"], res = ways_knee(w["ns"], x["cpu"])
+            x["search"] = plain(res)
+            flags += search_flags(res)
+            knees += [x["knee"]] if x["knee"] is not None else []
+        y = {n: statistics.median(statistics.median(x["cpu"][n]) for x in ls) for n in (lo, hi)}
+        note = WAYS_NOTES.get(s, "ways at a stride of a way or more, twice that at half a way")
+        note += f"; cycles per jump {y[lo]:.2f} at N={lo}, {y[hi]:.2f} at {hi}"
+        summary.append(
+            row(
+                f"frontend.l1i.ways[{s >> 10}KiB]",
+                statistics.median(knees) if knees else None,
+                [min(knees), max(knees)] if knees else None,
+                "lines",
+                published("frontend.l1i", "ways"),
+                list(dict.fromkeys(flags)),
+                note,
+            )
+        )
+    return {"plan": w, "line": line, "launches": {str(s): v for s, v in launches.items()}}, summary
 
 
 def placement(r, res, laps_for, seeds, reps):
@@ -391,8 +560,15 @@ def run_mispredict(r, args):
     return raw, summary
 
 
-POCS = {"P3.1": run_width, "P3.2": run_l1i, "P3.3": run_btb, "P3.7": run_mispredict}
-EST_MIN = {"P3.1": 1, "P3.2": 2, "P3.3": 6, "P3.7": 1}
+POCS = {
+    "P3.1": run_width,
+    "P3.1-page": run_page,
+    "P3.2": run_l1i,
+    "P3.2-ways": run_ways,
+    "P3.3": run_btb,
+    "P3.7": run_mispredict,
+}
+EST_MIN = {"P3.1": 1, "P3.1-page": 2, "P3.2": 2, "P3.2-ways": 2, "P3.3": 6, "P3.7": 1}
 
 
 def fmt(row):

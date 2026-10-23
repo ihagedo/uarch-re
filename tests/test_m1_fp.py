@@ -26,6 +26,7 @@ from uarchre.kernels import predictors as kp  # noqa: E402
 GHZ = 3.2
 RATIO = 1024 * 24e6 / (GHZ * 1e9)  # 24 MHz ticks x 1024 per core cycle
 MS = GHZ * 1e6  # core cycles per millisecond
+LINE = m1_fp.native.l1i_line(None)  # L1i line bytes from firestorm.yaml
 
 
 def table(src, name):
@@ -49,7 +50,7 @@ def model(name, src, hist=100, ras=48, ind=1000, overlap=1.0, barrier=13.0, fq=2
         return {str(s): 30 + 2 * s + (15 * s if s * t > ind else 0) for s in table(src, "sizes")}, rounds * t
     if name.startswith("m1fp_fd"):
         iters, n = (int(x) for x in re.search(r"/ \((\d+) \* (\d+)\)\);", src).groups())
-        miss = 25 if n * m1_fp.FD_LINE > 192 << 10 else 0
+        miss = 25 if n * m1_fp.native.l1i_line(None) > 192 << 10 else 0
         cost = lambda p: 4 + (barrier + miss if p == 1 else miss / overlap)
         return {p: cost(int(p)) for p in re.findall(r'printf\("pt (\d+) rep', src)}, iters * n
     if name.startswith("m1fp_fq"):
@@ -112,8 +113,8 @@ class TestPlan(unittest.TestCase):
 
     def test_fdip_footprints(self):
         l1i = m1_fp.native.published("frontend.l1i.size_kib") << 10
-        self.assertEqual(m1_fp.FD_LINE, m1_fp.native.published("memory.l2.line_bytes"))
-        ref, *big = (n * m1_fp.FD_LINE for n in m1_fp.FD_LINES)
+        self.assertEqual(m1_fp.native.l1i_line(None), 64)
+        ref, *big = (k << 10 for k in m1_fp.FD_KIB)
         self.assertLessEqual(ref, 0.7 * l1i)
         self.assertTrue(all(1.3 * l1i <= b <= 0.1 * (12 << 20) for b in big))
         self.assertFalse(m1_fp.native.published("decoupling.fdip_signature.present"))
@@ -122,16 +123,18 @@ class TestPlan(unittest.TestCase):
         L = m1_fp.FQ_LAYOUT
         self.assertEqual(L["slot"], 16 << 10)  # macOS page: the virtual layout fixes the L1i set
         self.assertGreater(L["copies"], 2 * 12)  # also thrashes a 6-way L1i indexed by bit 14
-        src = kp.fetchq_source(
-            m1_fp.FQ_GRID[-m1_fp.FQ_PACK :],
-            chain=max(m1_fp.FQ_CHAINS),
-            stride=m1_fp.FQ_PACK * L["slot"],
-            isa="aarch64",
-            counter="mach",
-            **L,
-        )
-        self.assertEqual(src.count('"mrs x9, fpsr\\n"'), m1_fp.FQ_PACK * L["copies"])
-        self.assertEqual(src.count('"b fq_land0_0_1\\n"'), 1)
+        for line in (64, 128):
+            src = kp.fetchq_source(
+                m1_fp.FQ_GRID[-m1_fp.FQ_PACK :],
+                chain=max(m1_fp.FQ_CHAINS),
+                stride=m1_fp.FQ_PACK * L["slot"],
+                isa="aarch64",
+                counter="mach",
+                line_bytes=line,
+                **L,
+            )
+            self.assertEqual(src.count('"mrs x9, fpsr\\n"'), m1_fp.FQ_PACK * L["copies"])
+            self.assertEqual(src.count('"b fq_land0_0_1\\n"'), 1)
 
     def test_iters_for(self):
         args = types.SimpleNamespace(min_ms=2.0)
@@ -260,7 +263,7 @@ def m1_sources(counter):
             max(m1_fp.IND_SIZES), [8, 16384], targets=2, isa="aarch64", counter=counter
         ),
         "ras": kp.ras_source(m1_fp.RAS_DMAX, [1, 256], seed=2, isa="aarch64", counter=counter),
-        "fd": kp.fdip_source([1, 0], n_lines=1024, isa="aarch64", counter=counter, line_bytes=m1_fp.FD_LINE),
+        "fd": kp.fdip_source([1, 0], n_lines=2048, isa="aarch64", counter=counter, line_bytes=LINE),
         "fq": kp.fetchq_source(
             [0, 512],
             chain=20,
@@ -268,6 +271,7 @@ def m1_sources(counter):
             isa="aarch64",
             counter=counter,
             serializer="isb; dsb sy",
+            line_bytes=LINE,
             **L,
         ),
     }
@@ -294,12 +298,12 @@ class TestCrossCompile(unittest.TestCase):
         for v, nops in enumerate([0, 512]):
             land = {s: a for s, a in syms.items() if s.startswith(f"fq_land{v}_")}
             self.assertEqual(len(land), L["copies"] * L["hops"])
-            sets = {(a % L["slot"]) // L["line_bytes"] for a in land.values()}
+            sets = {(a % L["slot"]) // LINE for a in land.values()}
             self.assertEqual(len(sets), L["hops"])
             for k in range(L["copies"]):
                 a = syms[f"fq_blk{v}_{k}"] % L["slot"]
                 end = a + 4 * (nops + 20 + 2 + 1) - 1  # chain 20, two serializing instructions, the jump
-                used = set(range(a // L["line_bytes"], end // L["line_bytes"] + 1))
+                used = set(range(a // LINE, end // LINE + 1))
                 self.assertFalse(used & sets)
 
 

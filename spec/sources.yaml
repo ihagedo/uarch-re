@@ -54,6 +54,16 @@ tuby-morrison-2025:
   url: https://arxiv.org/abs/2502.10719
   kind: reverse-engineering
 
+pacman-2022:
+  cite: 'Joseph Ravichandran, Weon Taek Na, Jay Lang and Mengjia Yan, "PACMAN: Attacking ARM Pointer Authentication with Speculative Execution"'
+  url: https://pacmanattack.com/
+  kind: reverse-engineering
+
+ileakage-2023:
+  cite: 'Jason Kim, Stephan van Schaik, Daniel Genkin and Yuval Yarom, "iLeakage: Browser-based Timerless Speculative Execution Attacks on Apple Devices"'
+  url: https://ileakage.com/
+  kind: reverse-engineering
+
 wong2013-rob:
   cite: Henry Wong, "Measuring Reorder Buffer Capacity"
   kind: method   # basis of the window probe; not a source of values

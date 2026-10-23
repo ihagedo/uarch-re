@@ -1,4 +1,4 @@
-"""P1.5 / P1.7 kernels (uarchre/kernels/scheduler.py, RISC-V and AArch64) and their gem5 helpers.
+"""P1.5 / P1.6 / P1.7 kernels (uarchre/kernels/scheduler.py, RISC-V and AArch64) and their gem5 helpers.
 
 python3 -m unittest tests.test_scheduler
 """
@@ -16,6 +16,7 @@ from uarchre.backends.isa.aarch64 import AArch64
 from uarchre.kernels.scheduler import (
     ASM_EMITTERS,
     A64AsmEmitter,
+    alu_mix,
     sched_probe,
     retire_drain,
     nop_stream,
@@ -72,6 +73,16 @@ class TestRetireKernels(unittest.TestCase):
     def test_dispatch_probe(self):
         asm = dispatch_probe(3, 2).params["asm"]
         self.assertEqual([ln.split()[0] for ln in asm], ["add", "add", "add", "fadd.d", "fadd.d"])
+
+    def test_alu_mix(self):
+        k = alu_mix(3, "movimm", adds=16, fill=8)
+        asm = k.params["asm"]
+        self.assertEqual(len(asm), 3 * 24)
+        self.assertEqual(asm[:2], ["add t2, t0, t1", "add t3, t0, t1"])
+        self.assertTrue(all(ln.startswith("addi ") and ", zero, " in ln for ln in asm[16:24]))  # li
+        self.assertEqual(asm[24:40], asm[:16])
+        self.assertEqual((k.params["depth"], k.params["k"], k.params["mix"]), (0, 3, "movimm"))
+        self.assertEqual(alu_mix(1, "nop", 8, 8, "aarch64").params["asm"][8:], ["nop"] * 8)
 
     def test_from_window_keeps_the_body(self):
         k = from_window(window_probe("nop", 2))
@@ -155,6 +166,9 @@ def a64_kernels():
         sched_probe("fp", 9, isa=A64),
         dispatch_probe(9, 9, isa=A64),
         dispatch_probe(2, 2, x="mul", y="add", isa=A64),
+        dispatch_probe(3, 2, x="fabs", y="nop", isa=A64),
+        dispatch_probe(3, 2, x="fcmp", y="nop", isa=A64),
+        alu_mix(2, "movimm", 8, 8, A64),
         retire_drain(3, isa=A64),
         nop_stream(2, A64),
         from_window(window_probe("nop", 2), A64),

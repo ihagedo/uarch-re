@@ -679,6 +679,157 @@ static int code_main(int argc, char **argv) {
 """
 
 
+_A64_MORE = r"""
+/* tlbway <nloads> <reps> <K> <dense> N...: node j in page j*K at line j of its page, so up to
+   PAGE_BYTES / 128 nodes never share an L1D or L2 set; dense=1 packs the same lines into one page */
+static int tlbway_main(int argc, char **argv) {
+    uint64_t nloads = parse(argv[2]);
+    int reps = atoi(argv[3]);
+    size_t K = parse(argv[4]), lpp = PAGE_BYTES / 128, nmax = 2;
+    int dense = atoi(argv[5]);
+    for (int a = 6; a < argc; a++) if (argv[a][0] != 'w' && parse(argv[a]) > nmax) nmax = parse(argv[a]);
+    size_t bytes = (dense ? nmax * 128 : nmax * K * PAGE_BYTES) + PAGE_BYTES;
+    char *buf = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (buf == MAP_FAILED) { perror("mmap"); return 1; }
+    size_t *off = malloc(nmax * sizeof(size_t));
+    for (int a = 6; a < argc; a++) {
+        if (warm_token(argv[a])) continue;
+        size_t N = parse(argv[a]);
+        if (N < 2) continue;
+        for (size_t j = 0; j < N; j++) off[j] = dense ? j * 128 : j * K * PAGE_BYTES + (j % lpp) * 128;
+        size_t *perm = cyclic(N, 0x7171 + N);
+        link_nodes(buf, off, perm, N);
+        void *p = buf + off[perm[0]];
+        free(perm);
+        p = warm(p, 4096);
+        timed(dense ? "tlbdense" : "tlbway", N, &p, nloads, reps, 1.0);
+    }
+    free(off);
+    return 0;
+}
+
+/* slc <node> <per> <reps> <xbytes> F...: a random cyclic chain over F / node lines, next node at +0 and
+   previous at +8. Per rep: read an xbytes buffer, one pass in chain order (the fill), then the reverse
+   chain timed in batches of per loads ("rev"); "cold" reads the buffer again before the probe, so every
+   line comes from DRAM. Prints "R <rev|cold><F> <batch> <rep> <ticks per load>". */
+static volatile uint64_t slc_sink;
+static void slc_evict(const char *x, size_t xb, size_t node) {
+    uint64_t s = 0;
+    for (size_t o = 0; o < xb; o += node) s += *(const volatile uint64_t *)(x + o);
+    slc_sink += s;
+}
+static inline void *after(void *dep, void *q) {  /* q, once dep is loaded */
+    void *r;
+    __asm__ __volatile__("and %0, %1, xzr\n\tadd %0, %0, %2" : "=&r"(r) : "r"(dep), "r"(q));
+    return r;
+}
+static int slc_main(int argc, char **argv) {
+    size_t node = parse(argv[2]), xb = parse(argv[5]), fmax = 0;
+    uint64_t per = parse(argv[3]) / UNROLL * UNROLL;
+    int reps = atoi(argv[4]);
+    for (int a = 6; a < argc; a++) if (parse(argv[a]) > fmax) fmax = parse(argv[a]);
+    char *buf = alloc(fmax + node, 0), *x = alloc(xb, 0);
+    for (int a = 6; a < argc; a++) {
+        size_t F = parse(argv[a]), n = F / node / UNROLL * UNROLL, nb = per ? n / per : 0;
+        if (nb < 2) continue;
+        size_t *perm = cyclic(n, 0x3131 + F);
+        for (size_t i = 0; i < n; i++) {
+            char *c = buf + perm[i] * node;
+            *(void **)c = buf + perm[(i + 1) % n] * node;
+            *(void **)(c + 8) = buf + perm[(i + n - 1) % n] * node + 8;
+        }
+        void *head = buf + perm[0] * node, *tail = buf + perm[n - 1] * node + 8;
+        free(perm);
+        double *v = malloc(2 * reps * nb * sizeof(double));
+        for (int r = 0; r < reps; r++)
+            for (int cold = 0; cold < 2; cold++) {
+                slc_evict(x, xb, node);
+                void *p = after(chase(head, n), tail);
+                if (cold) slc_evict(x, xb, node);
+                double *out = v + (cold * reps + r) * nb;
+                uint64_t t0 = cycles();
+                for (size_t b = 0; b < nb; b++) {
+                    p = chase(p, per);
+                    uint64_t t1 = cycles();
+                    out[b] = (double)(t1 - t0) / (double)per;
+                    t0 = t1;
+                }
+                __asm__ __volatile__("" :: "r"(p));
+            }
+        for (int cold = 0; cold < 2; cold++)
+            for (int r = 0; r < reps; r++)
+                for (size_t b = 0; b < nb; b++)
+                    printf("R %s%zu %zu %d %.4f\n", cold ? "cold" : "rev", F, b, r, v[(cold * reps + r) * nb + b]);
+        fflush(stdout);
+        free(v);
+    }
+    free(buf);
+    free(x);
+    return 0;
+}
+
+@BW@
+/* bw <bytes> <passes> S...: S interleaved streams over a written buffer, stream s over its s-th 1/S,
+   128 B per stream per step into eight vector accumulators. Prints "R bw <S> <pass> <ticks per pass>". */
+static int bw_main(int argc, char **argv) {
+    size_t bytes = parse(argv[2]) / 512 * 512;
+    int passes = atoi(argv[3]);
+    char *buf = alloc(bytes, 0);
+    memset(buf, 0x5a, bytes);
+    uint64_t acc[2];
+    for (int a = 4; a < argc; a++) {
+        int S = atoi(argv[a]);
+        void (*fn)(char *, uint64_t, uint64_t *) = 0;
+        for (unsigned k = 0; k < sizeof(BW) / sizeof(BW[0]); k++) if (BW[k].s == S) fn = BW[k].fn;
+        if (!fn) { fprintf(stderr, "bw: no %d-stream kernel\n", S); continue; }
+        uint64_t steps = bytes / (128 * (uint64_t)S);
+        fn(buf, steps, acc);
+        double *v = malloc(passes * sizeof(double));
+        for (int i = 0; i < passes; i++) {
+            uint64_t t0 = cycles();
+            fn(buf, steps, acc);
+            uint64_t t1 = cycles();
+            v[i] = (double)(t1 - t0);
+        }
+        for (int i = 0; i < passes; i++) printf("R bw %d %d %.4f\n", S, i, v[i]);
+        fflush(stdout);
+        free(v);
+    }
+    __asm__ __volatile__("" :: "r"(acc[0]), "r"(acc[1]));
+    free(buf);
+    return 0;
+}
+"""  # noqa: E501
+BW_STREAMS = (1, 2)
+
+
+def _bw_fn(s):
+    """s streams in x9.., x13 counts steps; ldp q pairs rotate through v0-v15 into accumulators v16-v23."""
+    ptr = [f"x{9 + i}" for i in range(s)]
+    body = ["mov x9, %0", *(f"add {ptr[i]}, {ptr[i - 1]}, %1, lsl #7" for i in range(1, s)), "mov x13, %1"]
+    body += [f"eor v{i}.16b, v{i}.16b, v{i}.16b" for i in range(24)] + ["cmp x13, #0", ".p2align 6", "1:"]
+    t = 0
+    for x in ptr:
+        for j in range(4):
+            body += [f"ldp q{t}, q{t + 1}, [{x}, #{32 * j}]"]
+            body += [f"add v{16 + 2 * j + h}.2d, v{16 + 2 * j + h}.2d, v{t + h}.2d" for h in (0, 1)]
+            t = (t + 2) % 16
+    body += [f"add {x}, {x}, #128" for x in ptr] + ["subs x13, x13, #1", "b.ne 1b"]
+    body += [f"add v16.2d, v16.2d, v{i}.2d" for i in range(17, 24)] + ["str q16, [%2]"]
+    clob = ", ".join(f'"{r}"' for r in [*ptr, "x13", *(f"v{i}" for i in range(24))])
+    return (
+        f"static void bw_{s}(char *p, uint64_t steps, uint64_t *out) {{\n    __asm__ __volatile__(\n"
+        f'{_asm(body)}\n        :: "r"(p), "r"(steps), "r"(out) : "memory", "cc", {clob});\n}}'
+    )
+
+
+def _bw():
+    table = ", ".join(f"{{{s}, bw_{s}}}" for s in BW_STREAMS)
+    return "\n".join(_bw_fn(s) for s in BW_STREAMS) + (
+        f"\nstatic const struct {{ int s; void (*fn)(char *, uint64_t, uint64_t *); }} BW[] = {{ {table} }};"
+    )
+
+
 _A64 = {  # 128 B lines and the OS page size (16 KiB on Apple silicon); the code mode
     "@LINE@": "128",
     "@PG@": "PAGE_BYTES",
@@ -687,8 +838,15 @@ _A64 = {  # 128 B lines and the OS page size (16 KiB on Apple silicon); the code
     "@PAGE@": "OS",
     "@MLP_USAGE@": "     mlp <F> <iters> <reps> <seed> [x=<bytes>] [n=<bytes>] K...    "
     "K chains, n-byte nodes (128)\n"
-    "     code <njumps> <reps> [d=1] P...                              a jump chain over P code pages",
-    "@MODES@": '    } else if (!strcmp(mode, "code")) {\n        return code_main(argc, argv);\n',
+    "     code <njumps> <reps> [d=1] P...                              a jump chain over P code pages\n"
+    "     tlbway <nloads> <reps> <K> <dense> N...                      a node in every K-th page\n"
+    "     slc <node> <per> <reps> <xbytes> F...                        fill, then probe in reverse\n"
+    "     bw <bytes> <passes> S...                                     streaming reads, S streams",
+    "@MODES@": '    } else if (!strcmp(mode, "code")) {\n        return code_main(argc, argv);\n'
+    + "".join(
+        f'    }} else if (!strcmp(mode, "{m}")) {{\n        return {m}_main(argc, argv);\n'
+        for m in ("tlbway", "slc", "bw")
+    ),
 }
 _A64_WARM = {
     True: "#define WARM_CAP 20000ULL      /* gem5: simulated loads are expensive */",
@@ -757,7 +915,7 @@ def chase_source(isa="riscv64", counter="pmccntr") -> str:
         for _ in range(UNROLL):
             indep += ["ldr x10, [x9]", "add %0, %0, x10", "add x9, x9, %2"]
         cyc = _a64_cycles(counter, _asm(chase2))
-        mlp = _mlp_aarch64() + _A64_CODE
+        mlp = _mlp_aarch64() + _A64_CODE + _A64_MORE.replace("@BW@", _bw())
         indep_clob = ', "x9", "x10"'
         probe = ""
         sub = {**_A64, "@WARM_CAP@": _A64_WARM[counter == "pmccntr"]}
@@ -1193,6 +1351,33 @@ static void fwd(char *p, uint64_t n) {
 """,
 }
 
+_MD_FWD2_A64 = (
+    r"""/* forced-sequential pair: str x1, [x1]; ldr x2, [x2], x1 = x2 = p and [p] = p: every load reads the
+   store just before it, and its address comes from the load before */
+static void fwd2(char *p, uint64_t n) {
+    __asm__ __volatile__(
+        "mov x1, %0\n\t" "mov x2, %0\n\t" "str x1, [x1]\n\t" "cmp x1, %1\n\t"
+        "1:\n\t"
+"""
+    + '        "str x1, [x1]\\n\\t" "ldr x2, [x2]\\n\\t"\n' * 8
+    + r"""        "subs %1, %1, #1\n\t" "b.ne 1b\n\t"
+        : "+r"(p), "+r"(n) :: "memory", "cc", "x1", "x2");
+}
+"""
+)
+_MD_FWD_BRANCH = '    if (argc > 1 && !strcmp(argv[1], "fwd")) {\n'
+_MD_FWD2_BRANCH = r"""    if (argc > 1 && !strcmp(argv[1], "fwd2")) {
+        uint64_t n = strtoull(argv[2], 0, 0);
+        int reps = atoi(argv[3]);
+        fwd2(buf, n);
+        for (int r = 0; r < reps; r++) {
+            uint64_t t0 = cycles(); fwd2(buf, n); uint64_t t1 = cycles();
+            printf("R fwd2 0 %d %.4f\n", r, (double)(t1 - t0) / (double)(n * 8));
+        }
+        return 0;
+    }
+"""
+
 _MD_MAIN = r"""
 int main(int argc, char **argv) {
     static char buf[16384] __attribute__((aligned(4096)));     /* slots < 6 KiB, + 8 KiB no-alias copy */
@@ -1230,8 +1415,10 @@ int main(int argc, char **argv) {
 
 def memdep_source(ns, alias=True, isa="riscv64", counter="pmccntr"):
     """C source: `memdep <iters> <reps> N...` prints "R memdep N rep cycles_per_block",
-    `fwd <n> <reps>` "R fwd 0 rep cycles_per_round_trip" (a store; load chain through one address).
+    `fwd <n> <reps>` "R fwd 0 rep cycles_per_round_trip" (a store; load chain through one address),
+    on aarch64 also `fwd2 <n> <reps>` "R fwd2 0 rep cycles_per_pair" (str x1, [x1]; ldr x2, [x2]).
     `counter` (aarch64 only): a key of aarch64.COUNTERS."""
+    fwd, main = _MD_FWD.get(isa, ""), _MD_MAIN
     if isa == "riscv64":
         cyc = r"""static inline uint64_t cycles(void) { uint64_t c; __asm__ __volatile__("rdcycle %0" : "=r"(c) :: "memory"); return c; }
 """  # noqa: E501
@@ -1241,6 +1428,8 @@ def memdep_source(ns, alias=True, isa="riscv64", counter="pmccntr"):
 
         cyc = COUNTERS[counter].lstrip("\n")
         fns = [_memdep_fn_a64(n, alias) for n in ns]
+        fwd += _MD_FWD2_A64
+        main = main.replace(_MD_FWD_BRANCH, _MD_FWD2_BRANCH + _MD_FWD_BRANCH)
     else:
         raise ValueError(isa)
     tag = "a" if alias else "n"
@@ -1254,8 +1443,8 @@ static const struct {{ int n; void (*fn)(char *, uint64_t); }} MD[] = {{ {table}
 #define NMD (sizeof(MD) / sizeof(MD[0]))
 
 """
-        + _MD_FWD[isa]
-        + _MD_MAIN
+        + fwd
+        + main
     )
 
 

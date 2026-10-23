@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Scheduler queues, queue pairing, dispatch probe (P1.5) and retire bandwidth (P1.7) on Apple silicon.
+"""Schedulers and dispatch (P1.5), mov #imm ALU share (P1.6-movimm), retire bandwidth (P1.7) on Apple silicon.
 
-  python3 targets/m1/m1_sched.py [P1.5] [P1.7] [--parts sizes,pairing,dispatch] [--fp-filler both]
+  python3 targets/m1/m1_sched.py [P1.5] [P1.6-movimm] [P1.7] [--parts sizes,pairing,dispatch]
+      [--fp-filler both]
   python3 targets/m1/m1_sched.py --gem5-smoke --tag smoke
 
 A launch times every point of one curve (scheduler.multi_source) in a fresh random order; ticks
@@ -27,6 +28,7 @@ from uarchre.analysis.knee import find_knee  # noqa: E402
 from uarchre.analysis.protocol import _fine_grid  # noqa: E402
 from uarchre.kernels.scheduler import (  # noqa: E402
     A64AsmEmitter,
+    alu_mix,
     dispatch_probe,
     multi_source,
     nop_stream,
@@ -68,12 +70,22 @@ PAIRS = [  # (preload class X, probe class Y, preloaded X ops), m below X's own 
     ("load", "store", [0, 8, 16, 24, 32, 40]),
 ]
 # S saturating ops, then M rename-only nops; S x (1 - rate / 8) must exceed what waits behind rename
-DISPATCH = {"add": [768, 800, 832], "mul": [120, 128, 136]}
+DISPATCH = {"add": [768, 800, 832], "mul": [120, 128, 136], "fabs": [384, 392, 400], "fcmp": [72, 80, 88]}
 DISPATCH_M = list(range(0, 449, 16))
+# each waiting op frees 8 / rate nops: 2 behind fabs (4 FP ports), 8 behind fcmp (one port)
+DISPATCH_GRID = {
+    "fabs": list(range(0, 65, 2)) + list(range(72, 433, 12)),
+    "fcmp": list(range(0, 257, 8)) + list(range(272, 577, 16)),
+}
 DRAIN_K = list(range(0, 1025, 64))
 DRAIN = {"links": 24, "exhaust": 528}  # 24 fsqrt (~312 cycles) outlast the fill; 528 adds > int PRF
 STREAM_K = [512, 1024, 1536, 2048]
-ITERS = {"sched": 11000, "dispatch": 56000, "drain": 12000, "stream": 60000}  # >= ~1 ms per rep
+# per block 80 adds, then 16 nop / movimm / int fillers: 80 / 6 cycles of ALU work outlast 96 / 8 of rename
+ELIM = {"adds": 80, "fill": 16}
+ELIM_K = [4, 8, 12, 16]
+ELIM_FILLERS = ("nop", "movimm", "int")
+# >= ~1 ms per rep
+ITERS = {"sched": 11000, "dispatch": 56000, "drain": 12000, "stream": 60000, "elim": 60000}
 REPS = 4  # inner reps per point; rep 0 warms the code
 
 SMOKE = {
@@ -83,11 +95,14 @@ SMOKE = {
         "store": (8, 48, 8),
     },
     "pairs": [("mul", "add", [0, 32]), ("store", "load", [0, 8])],
-    "dispatch": {"add": [160]},
+    "dispatch": {"add": [160], "fabs": [40], "fcmp": [120]},  # gem5: fabs 2/cycle, fcmp 4/cycle
     "dispatch_m": list(range(0, 193, 32)),
+    "dispatch_grid": {},
     "drain_k": [0, 32, 64, 96],
     "drain": {"links": 12, "exhaust": 256},
     "stream_k": [64, 128, 192, 256],
+    "elim": ELIM,
+    "elim_k": [2, 4, 6, 8],
     "iters": {k: 40 for k in ITERS},
     "reps": 2,
     "outer_reps": 2,
@@ -122,9 +137,12 @@ def config(r, args):
             "pairs": PAIRS,
             "dispatch": DISPATCH,
             "dispatch_m": DISPATCH_M,
+            "dispatch_grid": DISPATCH_GRID,
             "drain_k": DRAIN_K,
             "drain": DRAIN,
             "stream_k": STREAM_K,
+            "elim": ELIM,
+            "elim_k": ELIM_K,
             "iters": ITERS,
             "reps": REPS,
             "outer_reps": opt(args, "outer_reps"),
@@ -348,14 +366,19 @@ def pairing(r, cfg):
 
 
 DISPATCH_DB = {"add": "int", "mul": "mul", "fp": None}
+DISPATCH_NOTE = {
+    "fabs": "no FP buffer in firestorm.yaml; readings to compare: Handley 12 (FABS), 14 (FCMP)",
+    "fcmp": "one FP port, writes flags; reading to compare: Handley 14",
+}
 
 
 def dispatch(r, cfg):
     jobs = [(x, s) for x, blocks in cfg["dispatch"].items() for s in blocks]
-    ms = cfg["dispatch_m"]
+    grid = lambda x: cfg["dispatch_grid"].get(x, cfg["dispatch_m"])
 
     def one(job):
         x, s = job
+        ms = grid(x)
         rng, reps, recs = rng_for(cfg, f"disp_{x}{s}"), {}, []
         make = lambda m: dispatch_probe(s, m, x=x, y="nop", isa=ISA)
         for rep in range(cfg["outer_reps"]):
@@ -384,8 +407,9 @@ def dispatch(r, cfg):
         return fit
 
     fits = pmap(one, jobs, cfg["jobs"])
-    rows, raw = [], {}
+    rows, raw, row_flags = [], {}, {}
     for x in cfg["dispatch"]:
+        ms = grid(x)
         fx = [f for f in fits if f["x"] == x]
         q = [f["q_raw"] for f in fx]
         db = DISPATCH_DB.get(x)
@@ -396,6 +420,11 @@ def dispatch(r, cfg):
         if any(f["free"] < 8 for f in fx):
             flags.append("fit.no_free_run")
         rate = statistics.mean(f["rate_x"] for f in fx)
+        note = (
+            f"free nops x {rate:.2f} {x}/cycle behind S = {[f['S'] for f in fx]} (range over S); "
+            f"t0 = 0 applied (pipeline refill, uncalibrated on M1); counts each {x} queued after rename"
+        )
+        row_flags[x] = flags
         rows.append(
             {
                 "structure": f"dispatch.{x}",
@@ -405,12 +434,32 @@ def dispatch(r, cfg):
                 "published": node["value"] if node else None,
                 "source": cite(f"decoupling.dispatch_buffers.{db}") if node else "",
                 "flags": flags,
-                "note": f"free nops x {rate:.2f} {x}/cycle behind S = {[f['S'] for f in fx]} (range over S); "
-                f"t0 = 0 applied (pipeline refill, uncalibrated on M1); counts each {x} queued after rename",
+                "note": note + (f"; {DISPATCH_NOTE[x]}" if x in DISPATCH_NOTE else ""),
             }
         )
         raw[x] = fx
+    if "fabs" in raw and "fcmp" in raw:
+        rows.append(
+            dispatch_gap(raw["fabs"], raw["fcmp"], sorted(set(row_flags["fabs"] + row_flags["fcmp"])))
+        )
     return rows, raw
+
+
+def dispatch_gap(fa, fc, flags):
+    """fcmp minus fabs reading, interval over the S pairs."""
+    qa, qc = [f["q_raw"] for f in fa], [f["q_raw"] for f in fc]
+    ra, rc = (statistics.mean(f["rate_x"] for f in fs) for fs in (fa, fc))
+    return {
+        "structure": "dispatch.fcmp-fabs",
+        "value": float(np.mean(qc) - np.mean(qa)),
+        "ci": [float(min(qc) - max(qa)), float(max(qc) - min(qa))],
+        "unit": "entries",
+        "published": None,
+        "source": "",
+        "flags": flags,
+        "note": f"Handley 14 - 12 = 2; 0: one size for both fillers; a refill offset t0 adds "
+        f"({rc:.1f} - {ra:.1f}) x t0",
+    }
 
 
 def run_sched(r, args):
@@ -425,12 +474,12 @@ def run_sched(r, args):
     return raw, rows
 
 
-def slope_curve(r, cfg, key, make, ks):
+def slope_curve(r, cfg, key, make, ks, iters=None, poc="P1.7"):
     """Outer reps of one curve; least-squares slope of cycles/iter against K."""
     rng, reps, recs = rng_for(cfg, key), {}, []
     for rep in range(cfg["outer_reps"]):
         vals, rs = batch(
-            r, cfg, f"sched_{key}_r{rep}", make, ks, rng, cfg["iters"][key], cfg["seed"] + rep, 0
+            r, cfg, f"sched_{key}_r{rep}", make, ks, rng, iters or cfg["iters"][key], cfg["seed"] + rep, 0
         )
         for k, v in vals.items():
             reps.setdefault(k, []).append(v)
@@ -442,7 +491,7 @@ def slope_curve(r, cfg, key, make, ks):
     lo, hi = ols(ks[: h + 1], y[: h + 1])[0], ols(ks[h:], y[h:])[0]
     flags = [] if lo > 0 and 0.67 < hi / lo < 1.5 else ["shape.slope_change"]
     flags += clock_flags({"launches": recs})
-    log(f"P1.7 {key}: 1/slope {w:.2f} ci [{ci[0]:.2f}, {ci[1]:.2f}]")
+    log(f"{poc} {key}: 1/slope {w:.2f} ci [{ci[0]:.2f}, {ci[1]:.2f}]")
     fit = {"ks": ks, "values": y, "reps": reps, "slope": b, "intercept": a, "slope_se": se}
     return {**fit, "rate": w, "ci": ci, "half_slopes": [lo, hi], "flags": flags, "launches": recs}
 
@@ -495,8 +544,65 @@ def run_retire(r, args):
     return raw, rows
 
 
-POCS = {"P1.5": run_sched, "P1.7": run_retire}
-EST_MIN = {"P1.5": 8, "P1.7": 1}
+def alu_share(b, n=4000, rng=None):
+    """movimm fillers per 8 that take an ALU, 8 (movimm - nop) / (int - nop) in cycles per block.
+    With rng, b holds (slope, se) pairs and the 95 % interval of normal draws is returned."""
+    if rng is None:
+        return 8 * (b["movimm"] - b["nop"]) / (b["int"] - b["nop"])
+    d = {f: rng.normal(m, se, n) for f, (m, se) in b.items()}
+    den = d["int"] - d["nop"]
+    u = 8 * (d["movimm"] - d["nop"])[den > 0] / den[den > 0]
+    return [float(np.quantile(u, 0.025)), float(np.quantile(u, 0.975))] if len(u) else None
+
+
+def run_elim(r, args):
+    cfg = config(r, args)
+    e = cfg["elim"]
+
+    def one(f):
+        make = lambda k: alu_mix(k, f, e["adds"], e["fill"], ISA)
+        return slope_curve(r, cfg, f"elim_{f}", make, cfg["elim_k"], cfg["iters"]["elim"], "P1.6")
+
+    fits = dict(zip(ELIM_FILLERS, pmap(one, ELIM_FILLERS, cfg["jobs"])))
+    b = {f: fits[f]["slope"] for f in fits}
+    u = alu_share(b)
+    ci = alu_share({f: (b[f], fits[f]["slope_se"]) for f in fits}, rng=rng_for(cfg, "elim_ci"))
+    per = e["adds"] + e["fill"]
+    rate, rate_ci = width(b["int"], fits["int"]["slope_se"], per)
+    nop_ratio = b["nop"] * rate / e["adds"]  # 1 when nops are free and the adds bind
+    flags = sorted({g for f in fits.values() for g in f["flags"]})
+    if abs(nop_ratio - 1) > 0.05:
+        flags.append("shape.nop_reference")
+    rows = [
+        {
+            "structure": "movimm.alu_share",
+            "value": u,
+            "ci": ci,
+            "unit": "ALU movs per 8",
+            "published": 6,  # firestorm.yaml: at most 2 per 8 at rename
+            "source": cite("backend.move_elimination"),
+            "flags": flags,
+            "note": f"{e['fill']} movs behind {e['adds']} adds: 0 = all at rename (8 per cycle), "
+            f"6 = 2 per 8 at rename (5 if rename groups split), 8 = none; nop block / ALU bound "
+            f"{nop_ratio:.2f}",
+        },
+        {
+            "structure": "alu.rate",
+            "value": rate,
+            "ci": rate_ci,
+            "unit": "adds/cycle",
+            "published": sum("alu" in p["ops"].split() for p in native.published("backend.ports")),
+            "source": cite("backend.ports"),
+            "flags": fits["int"]["flags"],
+            "note": f"{per} independent adds per block: the reference for the share",
+        },
+    ]
+    raw = {"config": {k: v for k, v in cfg.items() if k != "jobs"}, **fits}
+    return raw, rows
+
+
+POCS = {"P1.5": run_sched, "P1.6-movimm": run_elim, "P1.7": run_retire}
+EST_MIN = {"P1.5": 10, "P1.6-movimm": 1, "P1.7": 1}
 
 
 def build_parser():

@@ -15,6 +15,8 @@ INT_ROT = [f"x{i}" for i in range(9, 17)]  # int / load filler destinations; x16
 FP_ROT = [f"d{i}" for i in range(16, 24)]  # fp filler destinations
 # 8-byte slots of the 128 B scratch buffer, in a fixed non-sequential order
 OFFSETS = [8 * k for k in (5, 1, 12, 9, 14, 3, 7, 10)]
+# mov #imm filler immediates: nonzero (mov x, #0 is a zero idiom), varying, one movz each; period 255
+IMMS = [1 + 37 * i % 255 for i in range(255)]
 # arbitrary 64-bit patterns for the filler sources and the int delay chains
 SRC_A, SRC_B = 0x5BD1E9955BD1E995, 0x1B8735939E3779B9
 DLY_A, DLY_B = 0xC2B2AE3D27D4EB4F, 0x9E3779B97F4A7C15
@@ -145,6 +147,8 @@ class AArch64(Emitter):
             return "cbnz xzr, 3f\\n\\t3:"
         if op == Op.FLAGS:
             return "cmp x6, x7"
+        if op == Op.MOV_IMM:
+            return f"mov {INT_ROT[idx % 8]}, #{IMMS[idx % len(IMMS)]}"
         raise ValueError(f"aarch64 has no {op} filler")
 
     def delay(self, op, chain):

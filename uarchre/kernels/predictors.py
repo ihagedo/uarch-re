@@ -147,7 +147,7 @@ def fetchq_source(
     ser = [s.strip() for s in ser.split(";") if s.strip()]  # ';' starts a comment in Mach-O asm
     per = stride // slot
     tail = slot - line_bytes * hops - 128
-    assert 4 * copies <= line_bytes and len(bs) <= per and copies * stride <= (128 << 20 if a64 else 1 << 20)
+    assert line_bytes % 4 == 0 and len(bs) <= per and copies * stride <= (128 << 20 if a64 else 1 << 20)
     assert 4 * (max(bs) + chain + len(ser) + 1) + line_bytes * spread * (copies - 1) < tail, "block too long"
     j = "b" if a64 else "j"
     asm = [".text", ".p2align 12"]
@@ -183,7 +183,7 @@ def fetchq_source(
             for h in reversed(range(hops)):
                 to = nxt if h == hops - 1 else land(v, k, h + 1)
                 asm += [
-                    f".org {page} + {slot - line_bytes * (h + 1) + 4 * k}",
+                    f".org {page} + {slot - line_bytes * (h + 1) + 4 * (k % (line_bytes // 4))}",
                     f"{land(v, k, h)}:",
                     f"{j} {to}",
                 ]

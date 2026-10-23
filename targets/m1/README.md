@@ -50,6 +50,7 @@ python3 targets/m1/m1_sweep.py --tag m1-flags-d2  --fillers flags  --depth 2 --n
 python3 targets/m1/m1_sweep.py --tag m1-load-d2   --fillers load   --depth 2 --n 64:220:4      # ~125 with a miss delay (genuine LQ ~130)
 python3 targets/m1/m1_sweep.py --tag m1-store-d2  --fillers store  --depth 2 --n 32:180:4      # ~100 with a miss delay (genuine SQ ~60: rule A5 must flag it)
 python3 targets/m1/m1_sweep.py --tag m1-branch-d2 --fillers branch --depth 2 --n 160:420:8     # ~330 (one failable op per retire row)
+python3 targets/m1/m1_sweep.py --tag m1-movimm-d2 --fillers movimm --depth 2 --n 256:832:16   # ~380 like adds; ~418 extra immediate registers; ~620 none (rename retire queue)
 
 # 3. Delay-type check (rule A5): load and store fillers behind a dependent FSQRT
 #    chain; 24 links x 13 cycles outlasts the fill time. --iters 10000 because
@@ -68,7 +69,7 @@ tar czf m1-results.tgz results/m1
 ## The other kernels
 
 ```sh
-python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~40 in all)
+python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~50 in all)
 python3 targets/m1/m1_kernels.py run all --tag m1
 python3 targets/m1/m1_kernels.py run fp P3.6     # one family, some PoCs
 ```
@@ -79,6 +80,7 @@ Results go to `results/m1/<tag>/<family>/<poc>/{raw,summary,run}.json` and are
 packed into `results/m1/<tag>.tgz`; every summary row puts the measured value
 next to the published one. Without a Mac, `--gem5-smoke` runs the same
 binaries under gem5 ARM as a functional test.
+`--l1i-line` overrides the L1i line size (default: `spec/cores/firestorm.yaml`).
 
 ## Output
 

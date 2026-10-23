@@ -36,11 +36,11 @@ IND_SIZES = sorted({round(8 * 2 ** (i / 4)) for i in range(45)})  # 8..16384 sit
 IND_TARGETS = (1, 2)
 RAS_DMAX = 256
 RAS_SEEDS = (0, 1, 2)
-# 128 B lines: 1024 (128 KiB) fit the 192 KiB L1i, 4096 and 7168 (512, 896 KiB) miss it and hit L2
-FD_LINE, FD_LINES, FD_SEEDS = 128, (1024, 4096, 7168), (1, 2, 3)
+# footprints: 128 KiB fits the 192 KiB L1i, 512 and 896 KiB miss it and hit L2; one jump per L1i line
+FD_KIB, FD_SEEDS = (128, 512, 896), (1, 2, 3)
 # landing lines 16 KiB apart share an L1i set (copies > ways); L2 is physically indexed, so they hit
 # there, and six descending hops make the hidden miss time visible next to the queue's drain time
-FQ_LAYOUT = dict(line_bytes=128, slot=16 << 10, copies=32, spread=3, hops=6)
+FQ_LAYOUT = dict(slot=16 << 10, copies=32, spread=3, hops=6)  # plus line_bytes = the L1i line
 FQ_PACK, FQ_GRID, FQ_CHAINS = 8, list(range(0, 513, 16)), (16, 18, 20)
 FQ_SERIALIZER, FQ_MIN_JUMP, FSQRT = "mrs x9, fpsr", 1.15, 13
 
@@ -236,7 +236,8 @@ def fdip_summary(raw):
     pub = None if node.get("present") is None else ("present" if node["present"] else "absent")
     l2 = native.published("memory.l2") or {}
     note = (
-        f"{big} vs {ref} lines of {FD_LINE} B; L1i miss {med(miss[(big, 0)]):.1f} cycles per line steady, "
+        f"{big} vs {ref} lines of {raw[0]['line_bytes']} B; "
+        f"L1i miss {med(miss[(big, 0)]):.1f} cycles per line steady, "
         f"{med(miss[(big, 1)]):.1f} with a mispredicted return every line ({barrier:.1f} cycles per return); "
         f"lines in flight per footprint {per_size}"
     )
@@ -265,7 +266,9 @@ def fdip_summary(raw):
 
 
 def run_fdip(r, args):
-    lines, seeds = ((128, 512), (1,)) if r.smoke else (FD_LINES, FD_SEEDS)
+    line = native.l1i_line(args)
+    kib, seeds = ((16, 64), (1,)) if r.smoke else (FD_KIB, FD_SEEDS)
+    lines = [(k << 10) // line for k in kib]
     raw = []
     for s in seeds:
         for n in lines:
@@ -278,12 +281,14 @@ def run_fdip(r, args):
                 seed=s,
                 isa=A64,
                 counter=r.counter,
-                line_bytes=FD_LINE,
+                line_bytes=line,
             )
             pts, ratio = measure(r, src, f"m1fp_fd_s{s}", f"P3.8 seed {s} {n} lines")
             for p in (1, 0):
                 raw.append(
-                    {"seed": s, "lines": n, "period": p, "iters": iters, "ratio": ratio, "cyc": pts[str(p)]}
+                    dict(
+                        seed=s, lines=n, line_bytes=line, period=p, iters=iters, ratio=ratio, cyc=pts[str(p)]
+                    )
                 )
     return raw, fdip_summary(raw)
 
@@ -312,6 +317,7 @@ def fetchq_summary(raw):
 def run_fetchq(r, args):
     ser = getattr(args, "serializer", None) or FQ_SERIALIZER
     grid, chains = ([0, 32, 64, 96], (16,)) if r.smoke else (FQ_GRID, FQ_CHAINS)
+    line = native.l1i_line(args)
     raw = []
 
     def sweep(bs, phase):
@@ -328,6 +334,7 @@ def run_fetchq(r, args):
                     isa=A64,
                     counter=r.counter,
                     serializer=ser,
+                    line_bytes=line,
                     **FQ_LAYOUT,
                 )
                 pts, ratio = measure(
@@ -335,6 +342,7 @@ def run_fetchq(r, args):
                 )
                 for b in chunk:
                     x = {"chain": c, "b": b, "phase": phase, "laps": laps, "ratio": ratio, "serializer": ser}
+                    x["line_bytes"] = line
                     raw.append({**x, "cyc": pts[str(b)]})
 
     sweep(grid, "coarse")

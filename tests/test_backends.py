@@ -13,6 +13,8 @@ from uarchre.backends.isa_base import emit_c, parse_output, run_args
 from uarchre.backends.isa.riscv64 import RISCV64
 from uarchre.backends.isa.x86_64 import X86_64
 from uarchre.backends.platform.toy import run_toy, ToyConfig
+from uarchre.backends.platform.toy_trace import trace_toy
+from uarchre.kernels import Op
 from uarchre.kernels.window import window_probe
 
 OUT = """clock_ratio_pre 0.5766
@@ -67,6 +69,20 @@ class TestHarness(unittest.TestCase):
 
         b = compile_kernel(window_probe("store", 8, depth=2), "riscv64", cc=CROSS, cflags=CFLAGS, static=True)
         self.assertIn(b"ELF", subprocess.run(["head", "-c", "4", b], capture_output=True).stdout)
+
+
+class TestMovImm(unittest.TestCase):
+    def test_lowerings(self):
+        self.assertEqual(X86_64().filler(Op.MOV_IMM, 1), "movq $38, %%r11")  # mov r64, imm32
+        self.assertEqual(RISCV64().filler(Op.MOV_IMM, 1), "addi t3, zero, 38")  # li
+
+    def test_toy_holds_an_int_register(self):
+        """The toy eliminates nothing: a mov #imm curve is the int curve."""
+        cfg = ToyConfig(rob=128, int_prf=72)
+        for n in (30, 40, 50):
+            k = window_probe("movimm", n)
+            self.assertEqual(run_toy(k, cfg), run_toy(window_probe("int", n), cfg), n)
+            self.assertEqual(trace_toy(k, cfg, events=False).cycles_per_iter, run_toy(k, cfg))
 
 
 class TestToyNoise(unittest.TestCase):

@@ -19,6 +19,7 @@ class Op(Enum):
     DELAY_INT = "delay_int"  # one link of a dependent long-latency int chain (div/imul) on chain `arg`
     BRANCH = "branch"  # never-taken conditional branch, no destination
     FLAGS = "flags"  # writes the flags register only (cmp); not on RISC-V
+    MOV_IMM = "mov_imm"  # move of a small nonzero immediate into an integer register
 
 
 FILLERS = {
@@ -29,6 +30,7 @@ FILLERS = {
     "store": Op.STORE,
     "branch": Op.BRANCH,
     "flags": Op.FLAGS,
+    "movimm": Op.MOV_IMM,
 }
 # "mix" alternates INT and FP fillers: it exhausts neither register pool first,
 # so its knee lands on the shared limit (the ROB on gem5; P1.4)

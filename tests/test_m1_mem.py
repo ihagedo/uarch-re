@@ -7,7 +7,9 @@ inline asm assembles for arm64-apple-macos.
 
 import contextlib
 import io
+import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -27,6 +29,8 @@ KB, MB = 1 << 10, 1 << 20
 RATIO = 7.5  # counter ticks per core cycle in the canned output
 TRUTH = dict(l1d=128 * KB, l2=8 * MB, l1_line=64, l2_line=128, ways=8, dtlb=160, stlb=3072, itlb=192)
 TRUTH.update(mlp=20, pairs=200, fwd=5.0, dram=320.0)
+TRUTH.update(tlb_ways=4, tlb_victim=32, fwd2=6.0, bw=60.0, bw2=63.0, slc="lru")
+HZ = 24576000  # counter_hz in the canned output
 
 
 def ramp(x, c, frac):
@@ -40,10 +44,20 @@ def lat(f):
     return 3 + m1 * (15 + tlb) + m2 * (TRUTH["dram"] - 18 - tlb)
 
 
-def model(argv):
-    """Canned stdout of the memory probe for argv (values in ticks)."""
-    mode, a = argv[0], [str(x) for x in argv[1:]]
-    out = ["counter_hz 24576000", "clock_ratio 7.5000", "page_bytes 16384"]
+def slc_lat(pos, kind):
+    """Reverse-probe cycles per load pos MiB in: L2 hits to 12 MiB, SLC hits after; DRAM past an 18 MiB
+    edge (sd 1.5 MiB) for LRU, a DRAM fraction 1 - exp(-(pos - 12) / 4) for random replacement."""
+    if kind == "lru":
+        d = 0.5 * math.erfc(-(pos - 18) / (1.5 * math.sqrt(2)))
+    else:
+        d = 1 - math.exp(-max(0.0, pos - 12) / 4)
+    return (18 if pos < 12 else 90) + d * (300 - 90)
+
+
+def model(argv, t=None):
+    """Canned stdout of the memory probe for argv (values in ticks); t overrides TRUTH."""
+    mode, a, t = argv[0], [str(x) for x in argv[1:]], {**TRUTH, **(t or {})}
+    out = [f"counter_hz {HZ}", "clock_ratio 7.5000", "page_bytes 16384"]
 
     def emit(tag, key, cyc, reps):
         n = int(reps)
@@ -90,6 +104,25 @@ def model(argv):
             emit("memdep", n, 2 + 0.5 * max(0, n - TRUTH["pairs"]) if argv[-1] != "noalias" else 2, a[1])
     elif mode == "fwd":
         emit("fwd", 0, TRUTH["fwd"], a[1])
+    elif mode == "fwd2":
+        emit("fwd2", 0, t["fwd2"], a[1])
+    elif mode == "tlbway":  # 32 sets on the low VPN bits; every K-th page uses 32 / gcd(K, 32) of them
+        k, dense = int(a[2]), a[3] == "1"
+        cap = t["tlb_ways"] * 32 // math.gcd(k, 32) + t["tlb_victim"]
+        for n in (int(x) for x in a[4:] if x.isdigit()):
+            emit(
+                "tlbdense" if dense else "tlbway", n, 3 + (0 if dense else 3 * min(2, max(0, n - cap))), a[1]
+            )
+    elif mode == "slc":
+        node, per = int(a[0]), int(a[1])
+        for f in map(int, a[4:]):
+            for b in range(f // node // 16 * 16 // per):
+                emit(f"rev{f}", b, slc_lat((b + 0.5) * per * node / MB, t["slc"]), a[2])
+                emit(f"cold{f}", b, 300.0, a[2])
+    elif mode == "bw":
+        nbytes = int(a[0]) // 512 * 512
+        for s in map(int, a[2:]):
+            emit("bw", s, nbytes / (t["bw" if s == 1 else "bw2"] * 1e9) * HZ / RATIO, a[1])
     return "\n".join(out) + "\n"
 
 
@@ -98,8 +131,8 @@ class FakeRunner:
 
     counter = "cntvct"
 
-    def __init__(self):
-        self.attempts, self.argvs = [], []
+    def __init__(self, **truth):
+        self.attempts, self.argvs, self.truth = [], [], truth
 
     def compile(self, src, name):
         return name
@@ -107,7 +140,7 @@ class FakeRunner:
     def launch(self, binpath, argv=(), timeout=1800, label=""):
         argv = list(argv) + (["noalias"] if binpath == "memdep_n" and argv[0] == "memdep" else [])
         self.argvs.append(argv)
-        return model(argv), RATIO
+        return model(argv, self.truth), RATIO
 
 
 def args(**kw):
@@ -176,6 +209,38 @@ class TestPlan(unittest.TestCase):
         self.assertGreaterEqual(p["blocks"] * 1.5 / 3.2e9, 1e-3)
         self.assertEqual(set(T.EST_MIN), set(T.POCS))
 
+    def test_tlb_ways(self):
+        p, ent = self.p["P2.2-ways"], native.published("memory.dtlb_l1.entries")
+        self.assertEqual(sorted(p["K"]), [1, 16, 32])
+        self.assertLessEqual(min(p["N"]), 0.7 * 5)  # 5 ways x 32 sets
+        self.assertGreaterEqual(max(p["N"]), 1.3 * (2 * 4 + 32))  # 4 x 32 + 32 victim at K = 16
+        self.assertEqual(p["N"], list(range(min(p["N"]), max(p["N"]) + 1)))  # resolution 1
+        self.assertLessEqual(
+            max(p["N"]), 16 * KB // 128
+        )  # a line of its own per node: no L1D or L2 set shared
+        self.assertLess(max(p["N"]), ent)  # K = 1 stays flat
+        self.assertGreaterEqual(p["nloads"] * 3 / 3.2e9, 1.5e-3)
+
+    def test_bw(self):
+        p = self.p["P2.3-bw"]
+        self.assertGreaterEqual(p["bytes"], 1 << 30)
+        self.assertGreaterEqual(p["bytes"] / 100e9, 1e-3)  # a pass outlasts 1 ms even at 100 GB/s
+        self.assertGreaterEqual(p["launches"], 5)
+        self.assertEqual(p["streams"][:2], [1, 2])
+
+    def test_slc(self):
+        p = self.p["P2.1-slc"]
+        l2, slc = (native.published(f"memory.{c}.size_mib") * MB for c in ("l2", "slc"))
+        self.assertLessEqual(min(p["F"]), 0.7 * 7.5 * MB)  # below a core's effective L2
+        self.assertGreaterEqual(max(p["F"]), 1.3 * (l2 + slc))
+        self.assertLessEqual(max(p["F"]) // (16 * KB), native.published("memory.dtlb_l2.entries"))
+        self.assertGreaterEqual(p["x"], 3 * (l2 + slc))  # the eviction read flushes L2 and SLC
+        self.assertEqual((p["node"], p["per"] % 16, p["hit"], p["l2_mib"]), (128, 0, 90, 12))
+        self.assertTrue(all(f % (16 * p["node"]) == 0 for f in p["F"]))  # whole chase blocks
+        s = T.plan(smoke=True)["P2.1-slc"]
+        self.assertGreater(max(s["F"]), 256 * KB)  # past gem5's L2
+        self.assertGreaterEqual(s["x"], 4 * 256 * KB)
+
     def test_smoke_plan_is_small(self):
         s = T.plan(smoke=True)
         self.assertEqual(set(s), set(T.POCS))
@@ -236,8 +301,8 @@ class TestConvert(unittest.TestCase):
 class TestEndToEnd(unittest.TestCase):
     """Each PoC's run function on the synthetic M1: the readings land on its truth."""
 
-    def run_poc(self, poc):
-        self.r = FakeRunner()
+    def run_poc(self, poc, **truth):
+        self.r = FakeRunner(**truth)
         raw, rows = T.POCS[poc](self.r, args())
         for x in rows:
             self.assertEqual(
@@ -298,11 +363,156 @@ class TestEndToEnd(unittest.TestCase):
         self.assertAlmostEqual(x["value"], TRUTH["pairs"], delta=1)
         self.assertEqual(x["flags"], [])
         self.assertAlmostEqual(rows["store-to-load forwarding round trip"]["value"], TRUTH["fwd"], delta=0.05)
+        x = rows["store-to-load forwarding, forced-sequential pair"]
+        self.assertAlmostEqual(x["value"], TRUTH["fwd2"], delta=0.05)
+        self.assertIn("str x1, [x1]; ldr x2, [x2]", x["note"])
+
+    def test_tlb_ways_victim(self):
+        raw, rows = self.run_poc("P2.2-ways")
+        self.assertEqual(rows["L1 dTLB, 32-page stride: pages before the rise"]["value"], 36)
+        self.assertEqual(rows["L1 dTLB, 16-page stride: pages before the rise"]["value"], 40)
+        self.assertEqual(rows["L1 dTLB, consecutive pages: pages before the rise"]["flags"], ["no rise"])
+        self.assertEqual(rows["L1 dTLB, consecutive pages: pages before the rise"]["published"], 160)
+        self.assertEqual(
+            (rows["L1 dTLB ways per set"]["value"], rows["L1 dTLB victim entries"]["value"]), (4, 32)
+        )
+        self.assertIn("+6.0 cycles", rows["L1 dTLB, 32-page stride: pages before the rise"]["note"])
+
+    def test_tlb_ways_set_associative(self):
+        _, rows = self.run_poc("P2.2-ways", tlb_ways=5, tlb_victim=0)
+        self.assertEqual(rows["L1 dTLB, 32-page stride: pages before the rise"]["value"], 5)
+        self.assertEqual(rows["L1 dTLB, 16-page stride: pages before the rise"]["value"], 10)
+        self.assertEqual(
+            (rows["L1 dTLB ways per set"]["value"], rows["L1 dTLB victim entries"]["value"]), (5, 0)
+        )
+        self.assertEqual(rows["L1 dTLB ways per set"]["flags"], [])
+
+    def test_tlb_ways_fully_associative(self):
+        _, rows = self.run_poc("P2.2-ways", tlb_ways=0, tlb_victim=160)
+        self.assertIsNone(rows["L1 dTLB, 32-page stride: pages before the rise"]["value"])
+        self.assertIsNone(rows["L1 dTLB ways per set"]["value"])
+        self.assertEqual(rows["L1 dTLB ways per set"]["flags"], ["no set conflict"])
+
+    def test_slc(self):
+        raw, rows = self.run_poc("P2.1-slc")
+        w = rows["SLC replacement, CPU-placed lines: edge width"]
+        self.assertAlmostEqual(w["value"], (1.036 + 0.674) * 1.5 / 18, delta=0.03)
+        self.assertEqual(w["flags"], ["step"])
+        self.assertAlmostEqual(rows["SLC: reach of the reverse probe"]["value"], 18, delta=0.2)
+        self.assertIn("22 MiB", w["note"])  # the first footprint whose probe reaches DRAM
+        prof = raw["profiles"][str(max(raw["plan"]["F"]))]
+        self.assertAlmostEqual(prof["hit_rate"][0], 1.0)
+        self.assertAlmostEqual(prof["hit_rate"][-1], 0.0)
+        self.assertAlmostEqual(prof["dram"], 300.0, delta=1)
+        self.assertEqual(len(prof["pos_mib"]), len(prof["hit_rate"]))
+
+    def test_slc_random(self):
+        _, rows = self.run_poc("P2.1-slc", slc="random")
+        w = rows["SLC replacement, CPU-placed lines: edge width"]
+        k25, k50, k85 = (12 + 4 * math.log(1 / (1 - q)) for q in (0.25, 0.5, 0.85))
+        self.assertAlmostEqual(w["value"], (k85 - k25) / k50, delta=0.03)
+        self.assertEqual(w["flags"], ["gradual"])
+        self.assertAlmostEqual(rows["SLC: reach of the reverse probe"]["value"], k50, delta=0.2)
+
+    def test_slc_reach_within_l2(self):
+        raw = {"plan": {**T.plan()["P2.1-slc"], "F": [8 * MB, 16 * MB]}}
+        lines = [
+            f"R rev{f} {b} 0 {RATIO * (18 if b < 32 else 300)}"
+            for f in raw["plan"]["F"]
+            for b in range(f // (256 * KB))
+        ]
+        lines += [f"R cold{f} {b} 0 {RATIO * 300}" for f in raw["plan"]["F"] for b in range(f // (256 * KB))]
+        raw["launches"] = [T.convert("\n".join(lines) + "\n", RATIO)]
+        rows = by(T.analyze_slc(raw))
+        self.assertEqual(
+            rows["SLC replacement, CPU-placed lines: edge width"]["flags"], ["step", "reach within L2"]
+        )
+        self.assertAlmostEqual(rows["SLC: reach of the reverse probe"]["value"], 8, delta=0.2)
+
+    def test_bw(self):
+        raw, rows = self.run_poc("P2.3-bw")
+        one = rows["DRAM read bandwidth, one core"]
+        self.assertAlmostEqual(one["value"], TRUTH["bw"], delta=0.3)
+        self.assertEqual(one["flags"], [])
+        self.assertIn("1 GiB per pass", one["note"])
+        two = rows["DRAM read bandwidth, one core, 2 interleaved streams"]
+        self.assertAlmostEqual(two["value"], TRUTH["bw2"], delta=0.3)
+        self.assertIn("1.05 x one stream", two["note"])
+        self.assertEqual(len(raw["launches"]), 5)  # several launches even when --launches is 2
+        lr = {**raw["launches"][0], "scalars": {}, "ratio": 1.0}  # gem5: core cycles at GEM5_HZ
+        lr["runs"] = {"bw": {"1": [T.GEM5_HZ * 1e-3]}}
+        self.assertAlmostEqual(T.bw_rates(lr, 1, 10**6)[0], 1.0)
 
     def test_memdep_without_a_knee(self):
         rows = by(T.analyze_memdep(raw_memdep_flat()))
         self.assertIsNone(rows["store-load pairs tracked"]["value"])
         self.assertIn("no rise", rows["store-load pairs tracked"]["flags"])
+
+
+def probe_levels(n, levels, uniform, seed=1):
+    """Level each line of a reverse probe comes from (len(levels) = DRAM) after one fill over n lines in
+    random order. levels: (sets, ways, "lru" | "random"), caches start full of other lines and each
+    lower level holds the victims of the one above (exclusive); sets: line mod sets, or random."""
+    rng = random.Random(seed)
+    tags = [[[] for _ in range(s)] for s, _, _ in levels]
+    smap = [{} for _ in levels]
+
+    def ways(i, x):
+        return tags[i][x % levels[i][0] if uniform else smap[i].setdefault(x, rng.randrange(levels[i][0]))]
+
+    def insert(i, x):
+        if i < len(levels):
+            st = ways(i, x)
+            if len(st) == levels[i][1]:
+                insert(i + 1, st.pop(0 if levels[i][2] == "lru" else rng.randrange(len(st))))
+            st.append(x)
+
+    def access(x):
+        i = next((i for i in range(len(levels)) if x in ways(i, x)), len(levels))
+        if i < len(levels):
+            ways(i, x).remove(x)
+        if i == 0:
+            ways(0, x).append(x)
+        else:
+            insert(0, x)
+        return i
+
+    for j in range(2 * sum(s * w for s, w, _ in levels)):
+        access(-1 - j)
+    order = list(range(n))
+    rng.shuffle(order)
+    for x in order:
+        access(x)
+    return [access(x) for x in reversed(order)]
+
+
+class TestSLCStatistic(unittest.TestCase):
+    """The edge width on simulated caches: LRU reads a step, random replacement a gradual edge."""
+
+    def verdict(self, levels, lat, node, uniform):
+        cap = sum(s * w for s, w, _ in levels) * node
+        p = dict(
+            F=T.geom(cap, 2.4 * cap, 4, 16 * node), node=node, per=64, reps=1, x=0, hit=lat[-2], l2_mib=0
+        )
+        out = []
+        for f in p["F"]:
+            lv = probe_levels(f // node // 16 * 16, levels, uniform)
+            for b in range(len(lv) // p["per"]):
+                y = sum(lat[x] for x in lv[b * p["per"] : (b + 1) * p["per"]]) / p["per"]
+                out += [f"R rev{f} {b} 0 {y:.4f}", f"R cold{f} {b} 0 {lat[-1]:.4f}"]
+        rows = by(T.analyze_slc({"plan": p, "launches": [T.convert("\n".join(out) + "\n", 1.0)]}))
+        return rows["SLC replacement, CPU-placed lines: edge width"]["flags"][0]
+
+    def test_l2_and_exclusive_slc(self):
+        """12-way L2 + 16-way SLC holding its victims, sets on random physical pages, M1 latencies."""
+        for slc, want in (("lru", "step"), ("random", "gradual")):
+            got = self.verdict([(256, 12, "lru"), (128, 16, slc)], [18, 90, 300], 128, uniform=False)
+            self.assertEqual(got, want, slc)
+
+    def test_gem5_l2(self):
+        """gem5's L2 alone: 8 ways, a physically contiguous buffer (set = line mod sets)."""
+        for pol, want in (("lru", "step"), ("random", "gradual")):
+            self.assertEqual(self.verdict([(256, 8, pol)], [17, 158], 64, uniform=True), want, pol)
 
 
 def raw_memdep_flat():
@@ -354,6 +564,9 @@ class TestMacSources(unittest.TestCase):
         self.assertIn('if (!strncmp(argv[a], "d=", 2)) { code_dense = atoi(argv[a] + 2); continue; }', src)
         self.assertIn("pthread_jit_write_protect_np(0);", src)
         self.assertIn("sys_icache_invalidate(code, bytes);", src)
+        for mode in ("tlbway", "slc", "bw"):
+            self.assertIn(f'!strcmp(mode, "{mode}")) {{\n        return {mode}_main(argc, argv);', src)
+        self.assertIn('printf("R fwd2 0 %d %.4f\\n"', M.memdep_source([4], True, "aarch64", "mach"))
 
     @unittest.skipUnless(CROSS, "needs the AArch64 cross compiler (. tools/env.sh)")
     def test_cross_compiles(self):

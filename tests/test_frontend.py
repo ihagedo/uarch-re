@@ -33,6 +33,24 @@ class TestKernels(unittest.TestCase):
         self.assertEqual(m.asm.count("fadd.d"), 4)
         self.assertEqual(m.asm.count("nop"), 4)
 
+    def test_page_loop_layout(self):
+        for isa in (fe.RV, fe.A64):
+            k = fe.page_loop(20, 16380, isa=isa)
+            body = k.asm.split("Lpg_loop:\n", 1)[1].splitlines()
+            self.assertEqual(len(body), 20)
+            self.assertEqual(body[-2:], [isa["dec"], isa["loop"].format(label="Lpg_loop")])
+            self.assertIn(".p2align 14\nLpg_base:\n.org Lpg_base + 16380\n", k.asm)
+            self.assertEqual((k.name, k.isa), ("fe_page_L20_o16380", isa["isa"]))
+        self.assertEqual(fe.page_loop(10, 2044, filler="mix", isa=fe.A64).asm.count("fadd d"), 4)
+        for bad in (
+            dict(L=1, offset=0),
+            dict(L=4, offset=2),
+            dict(L=4, offset=16384),
+            dict(L=4, offset=0, page=3),
+        ):
+            with self.assertRaises(ValueError):
+                fe.page_loop(**bad)
+
     def test_straight_nops_footprint(self):
         k = fe.straight_nops(32768, filler="nop")
         self.assertEqual(k.params["insts"] * 4, 32768)
@@ -109,6 +127,8 @@ def a64_kernels():
         fe.straight_nops(4096, filler="nop", isa=A),
         fe.jump_chain(300, 1, isa=A),
         fe.random_branches(4, isa=A),
+        fe.page_loop(64, 16380, isa=A),
+        fe.page_loop(9, 2044, filler="mix", isa=A),
     ]
 
 
@@ -225,6 +245,37 @@ class TestEstimators(unittest.TestCase):
             r = fe.width_estimate(self.Ls, cpi)
             self.assertEqual(r["width"], w)
             self.assertEqual(r["shape"], "ramp")
+
+    def page_curves(self, fetch, Ls=range(2, 65)):
+        """(crossing, inside) cycles per iteration: 8-wide rename (sub + cbnz fused) under `fetch`."""
+        ramp = [max(1, (L - 1) / 8) for L in Ls]
+        cross = [max(fetch(L), r) for L, r in zip(Ls, ramp)]
+        return list(Ls), cross, ramp
+
+    def test_step_period(self):
+        cases = {
+            16: lambda L: 1 + math.ceil((L - 1) / 16),  # one 16-instruction block a cycle, split at a page
+            8: lambda L: 1 + math.ceil((L - 1) / 8),
+            None: lambda L: 1,  # no split
+        }
+        for period, fetch in cases.items():
+            for Ls in (range(2, 65), [2, 4, 6, 8, 9, 10, 12, 16, 17, 18, 20, 24, 26]):
+                r = fe.step_period(*self.page_curves(fetch, Ls))
+                self.assertEqual(r["period"], period, (period, list(Ls)))
+                if period:
+                    self.assertAlmostEqual(r["heights"][period], 1, places=6)
+        r = fe.step_period(*self.page_curves(cases[16], range(2, 65)))
+        self.assertEqual(r["heights"][8], 0)
+        self.assertLess(r["fetch_bound"][-1], 26)  # the rename ramp takes over
+
+    def test_step_period_two_staircases(self):
+        """8 a cycle plus a refill per 64 B line (gem5's fetch buffer): the smaller period wins."""
+        Ls = list(range(2, 40))
+        y = [3 + math.ceil((L - 1) / 8) + 2 * math.ceil((L - 1) / 16) for L in Ls]
+        r = fe.step_period(Ls, y, y)
+        self.assertEqual(r["period"], 8)
+        self.assertAlmostEqual(r["heights"][16], 2, places=6)
+        self.assertIsNone(fe.step_period([2, 3, 4], [1, 1, 1], [1, 1, 1])["period"])  # too few points
 
     def test_onset_set_associative_ramp(self):
         # C = 256 entries, 4 ways -> 64 sets; overflow sets miss (ways+1) per lap

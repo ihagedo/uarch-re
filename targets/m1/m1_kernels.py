@@ -39,8 +39,8 @@ def main(argv=None):
             m = family(f)
             for poc in m.POCS:
                 total += m.EST_MIN.get(poc, 0)
-                print(f"{f:6s} {poc:6s} ~{m.EST_MIN.get(poc, 0):3d} min")
-        print(f"all    ~{total} min")
+                print(f"{f:6s} {poc:12s} ~{m.EST_MIN.get(poc, 0):3d} min")
+        print(f"{'all':19s} ~{total} min")
         return
     if a.cmd == "pack":
         print("wrote", native.pack(a.tag))

@@ -3,7 +3,8 @@
 Fillers are independent of each other and of the misses, so throughput never limits before the
 window does; the branch filler is cmp + jne (never taken, macro-fused). The asm block takes 4 of the
 16 GPRs: int fillers rotate over r10-r15 and rcx/rdx carry the imul delay chains (3 c, pipelined, so
-~3x the links of sqrtsd). The fp filler needs AVX; rdtscp counts TSC ticks, not core cycles.
+~3x the links of sqrtsd). The movimm filler is mov r64, imm32. The fp filler needs AVX; rdtscp counts
+TSC ticks, not core cycles.
 """
 
 from ..isa_base import Emitter
@@ -91,6 +92,8 @@ static inline uint64_t cycles(void) {
             return "cmpq %%r8, %%r8\\n\\tjne 3f\\n\\t3:"
         if op == Op.FLAGS:
             return "cmpq %%r8, %%r9"
+        if op == Op.MOV_IMM:
+            return f"movq ${1 + 37 * idx % 255}, {INT_ROT[idx % len(INT_ROT)]}"
         raise ValueError(op)
 
     def delay(self, op, chain):

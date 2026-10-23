@@ -3,7 +3,7 @@
 R10K-style: in-order dispatch of `width` ops/cycle, each taking a ROB entry plus, by type, an int/FP
 register, LQ or SQ entry; out-of-order issue; in-order retirement frees all of it (R10K frees the old
 mapping instead: same headroom). Chain ops wait for their chain's previous op; branch and flags take a
-ROB entry only. PRF headroom = prf_size - arch_regs.
+ROB entry only, mov #imm an int register (no elimination). PRF headroom = prf_size - arch_regs.
 
   run_toy(window_probe("int", 40), ToyConfig(rob=64))  # -> cycles/iter
 """
@@ -134,7 +134,7 @@ def run_toy(kernel: Kernel, cfg: ToyConfig, iters: int = 60, warm: int = 20) -> 
 
     def needs(op):
         """Pools an op takes at dispatch."""
-        if op in (Op.INT, Op.LOAD, Op.MISS_LOAD, Op.DELAY_INT):
+        if op in (Op.INT, Op.MOV_IMM, Op.LOAD, Op.MISS_LOAD, Op.DELAY_INT):
             r = ["int_prf"]
         elif op in (Op.FP, Op.DELAY_FP):
             r = ["fp_prf"]
@@ -157,6 +157,7 @@ def run_toy(kernel: Kernel, cfg: ToyConfig, iters: int = 60, warm: int = 20) -> 
                 Op.MISS_LOAD: cfg.miss_latency,
                 Op.LOAD: cfg.load_latency,
                 Op.INT: cfg.alu_latency,
+                Op.MOV_IMM: cfg.alu_latency,
                 Op.FP: cfg.fp_latency,
                 Op.DELAY_FP: cfg.alu_delay_latency,
                 Op.DELAY_INT: cfg.alu_delay_latency,

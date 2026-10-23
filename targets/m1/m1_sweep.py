@@ -28,7 +28,7 @@ from uarchre.backends.platform.native import compile_source  # noqa: E402
 from uarchre.kernels.window import window_probe  # noqa: E402
 from uarchre.analysis.protocol import run_protocol  # noqa: E402
 from uarchre.analysis.bootstrap import bootstrap_knee  # noqa: E402
-from uarchre.analysis.knee import attribute  # noqa: E402
+from uarchre.analysis.knee import STRUCT, attribute  # noqa: E402
 from uarchre.spec import spec_from_estimates, write_spec  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -223,7 +223,7 @@ def main():
         w.writerows(rows)
 
     ctx = {"emitter": "aarch64", "platform": "m1", "depth": args.depth, "delay": args.delay}
-    est = attribute(knees, ctx)
+    est = attribute({f: k for f, k in knees.items() if f in STRUCT}, ctx)  # movimm: knee only
     accepted = [t for t in runner.attempts if t["accepted"]]
     ghz = [t["ghz"] for t in runner.attempts if t["ghz"]]
     conditions = {

@@ -153,6 +153,23 @@ class TestAArch64(unittest.TestCase):
         self.assertEqual(loop.count("ldr "), 56)  # one load per chain per iteration
         self.assertEqual(loop.count("fmov "), 2 * 56)  # every step: fmov, ldr, fmov
 
+    def test_m1_dispute_modes(self):
+        src = M.chase_source("aarch64", "cntvct")
+        for s in M.BW_STREAMS:
+            body = src[src.index(f"static void bw_{s}(") :]
+            loop = body[body.index('"1:') : body.index("b.ne 1b")]
+            self.assertEqual(loop.count("ldp q"), 4 * s)  # 128 B per stream per step
+            self.assertEqual(loop.count("add v"), 8 * s)  # every loaded register into an accumulator
+        self.assertIn("BW[] = { {1, bw_1}, {2, bw_2} };", src)
+        self.assertIn("off[j] = dense ? j * 128 : j * K * PAGE_BYTES + (j % lpp) * 128;", src)
+        self.assertIn("*(void **)(c + 8) = buf + perm[(i + n - 1) % n] * node + 8;", src)  # the reverse chain
+        md = M.memdep_source([4], True, "aarch64")
+        fwd2 = md[md.index("static void fwd2(") : md.index("b.ne 1b", md.index("static void fwd2("))]
+        self.assertEqual(fwd2.count('"str x1, [x1]\\n\\t" "ldr x2, [x2]\\n\\t"'), 8)
+        self.assertIn('"str x9, [%0]\\n\\t" "ldr x9, [%0]\\n\\t"', md)  # the round trip as before
+        self.assertIn('!strcmp(argv[1], "fwd2")', md)
+        self.assertNotIn("fwd2", M.memdep_source([4]))
+
     def test_memdep_blocks(self):
         src = M.memdep_source([4, 384], True, "aarch64")
         self.assertIn("static void mda_384(", src)

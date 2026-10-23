@@ -111,6 +111,11 @@ def published(path, core="firestorm"):
     return node
 
 
+def l1i_line(args):
+    """L1i line bytes: --l1i-line, else firestorm.yaml."""
+    return getattr(args, "l1i_line", None) or published("frontend.l1i.line_bytes")
+
+
 def add_args(ap):
     """Options every runner takes."""
     ap.add_argument("--tag", default="m1")
@@ -119,6 +124,7 @@ def add_args(ap):
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--pin-cpu", type=int, default=None, help="Linux only (Asahi M1 P-cores: 4-7)")
     ap.add_argument("--cc", default=None)
+    ap.add_argument("--l1i-line", type=int, default=None, help="L1i line bytes (default: firestorm.yaml)")
     ap.add_argument("--force", action="store_true", help="run despite failed preflight checks (recorded)")
     ap.add_argument("--gem5-smoke", action="store_true", help="tiny sweeps under gem5 ARM (no Mac needed)")
     return ap

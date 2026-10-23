@@ -26,9 +26,12 @@
   },
   "l1i": {
    "size_kib": 192,
+   "line_bytes": 64,
    "provenance": "inferred",
    "sources": [
-    "7cpu-m1"
+    "7cpu-m1",
+    "pacman-2022",
+    "ileakage-2023"
    ]
   },
   "btb_levels": [

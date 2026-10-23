@@ -1,4 +1,4 @@
-"""P1.5 scheduler-queue and P1.7 retire-bandwidth probes (RISC-V and AArch64, raw asm).
+"""P1.5 scheduler-queue, P1.6 ALU-mix and P1.7 retire-bandwidth probes (RISC-V and AArch64, raw asm).
 
 A kernel's loop body is `params["asm"]` for `params["isa"]`, lowered by that ISA's `AsmEmitter` through
 the shared C harness (%0/%1 chase chains, %2 loop counter, %3 128 B scratch; RISC-V t0 = 1, t1 = 2,
@@ -8,7 +8,7 @@ queue, so the knee reads that queue. P1.7 (Handley): D x fsqrt blocks the ROB he
 then E adds need more int registers than the headroom, so cycles/iter grow with slope 1 / retire width.
 """
 
-from . import Kernel
+from . import FILLERS, Kernel, Op
 from ..backends.isa.aarch64 import AArch64, INT_ROT, FP_ROT, OFFSETS
 from ..backends.isa.riscv64 import RISCV64
 from ..backends.isa_base import emit_c
@@ -68,6 +68,8 @@ SPELL = {
             "fp": "fadd {f}, d30, d31",
             "mul": "mul {r}, x6, x7",
             "nop": "nop",
+            "fabs": "fabs {f}, d30",
+            "fcmp": "fcmp d30, d31",  # writes NZCV, not an FP register
         },
         "delay": "fsqrt d24, d24",
     },
@@ -181,6 +183,18 @@ def retire_drain(k, links=12, exhaust=64, isa="riscv64"):
 def nop_stream(k, isa="riscv64"):
     """Pure throughput: K NOPs per iteration (narrowest pipeline stage)."""
     return asm_kernel(f"nop_stream_{k}", ["nop"] * k, depth=0, isa=isa, k=k)
+
+
+def alu_mix(k, filler, adds=80, fill=16, isa="riscv64"):
+    """P1.6: K blocks of `adds` independent adds, then `fill` window fillers (FILLERS names). The
+    adds keep the ALUs the bottleneck, so cycles per block grow with every filler that needs one."""
+    em = STD_EMITTERS[isa]
+    lines = []
+    for b in range(k):
+        lines += [em.filler(Op.INT, i) for i in range(adds)]
+        lines += [em.filler(FILLERS[filler], b * fill + i) for i in range(fill)]
+    name = f"alu_mix_{filler}_a{adds}_f{fill}_{k}"
+    return asm_kernel(name, lines, depth=0, isa=isa, k=k, mix=filler, adds=adds, fill=fill)
 
 
 # --------------------------------------------------------------------------- multi-point harness

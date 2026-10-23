@@ -88,6 +88,16 @@ class TestAArch64Emitter(unittest.TestCase):
         head = "\n".join(self.em.loop_head())
         self.assertNotRegex(head, r"mov x[67], #[01]\b")  # no 0/1 filler sources
 
+    def test_movimm_filler(self):
+        """mov #imm: rotating destinations, small nonzero immediates that vary (mov x, #0 is a zero
+        idiom), each a single movz."""
+        lines = [self.em.filler(Op.MOV_IMM, i) for i in range(24)]
+        self.assertEqual(lines[:2], ["mov x9, #1", "mov x10, #38"])
+        self.assertEqual({ln.split(",")[0] for ln in lines}, {f"mov x{i}" for i in range(9, 17)})
+        imms = [int(ln.split("#")[1]) for ln in lines]
+        self.assertEqual(len(set(imms)), 24)
+        self.assertTrue(all(0 < i < 1 << 16 for i in imms))
+
     def test_m1_chain_rules(self):
         self.assertEqual(self.em.line, 128)
         self.assertGreaterEqual(self.em.default_bytes, 256 << 20)

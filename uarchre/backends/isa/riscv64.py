@@ -2,8 +2,9 @@
 
 Fillers read constant sources (t0, t1, ft10, ft11) and rotate destinations. Delays are fsqrt.d (gem5
 FloatSqrt, 24 c) or divu by t0 = 1 (gem5 IntDiv, 20 c), both unpipelined with 2 units. No flags
-register, so no flags filler. rdcycle counts core cycles (clock probe ~1.0); the probe is short
-because every add costs simulation time.
+register, so no flags filler; the movimm filler is li, i.e. addi rd, zero, imm, an ordinary IntAlu
+add. rdcycle counts core cycles (clock probe ~1.0); the probe is short because every add costs
+simulation time.
 """
 
 from ..isa_base import Emitter
@@ -87,6 +88,8 @@ static inline uint64_t cycles(void) {
             return "sd t0, 0(%3)"
         if op == Op.BRANCH:
             return "bne zero, zero, 3f\\n\\t3:"
+        if op == Op.MOV_IMM:
+            return f"addi {INT_ROT[idx % 8]}, zero, {1 + 37 * idx % 255}"
         raise ValueError(f"riscv64 has no {op} filler")
 
     def delay(self, op, chain):

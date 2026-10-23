@@ -32,7 +32,7 @@ def op_name(op):
 
 def needs(op):
     """Pools besides the ROB an op holds from dispatch to retire (toy.run_toy.needs)."""
-    if op in (Op.INT, Op.LOAD, Op.MISS_LOAD, Op.DELAY_INT):
+    if op in (Op.INT, Op.MOV_IMM, Op.LOAD, Op.MISS_LOAD, Op.DELAY_INT):
         r = ["int_prf"]
     elif op in (Op.FP, Op.DELAY_FP):
         r = ["fp_prf"]
@@ -133,6 +133,7 @@ def trace_toy(kernel: Kernel, cfg: ToyConfig, iters: int = 60, warm: int = 20, e
             Op.MISS_LOAD: cfg.miss_latency,
             Op.LOAD: cfg.load_latency,
             Op.INT: cfg.alu_latency,
+            Op.MOV_IMM: cfg.alu_latency,
             Op.FP: cfg.fp_latency,
             Op.DELAY_FP: cfg.alu_delay_latency,
             Op.DELAY_INT: cfg.alu_delay_latency,

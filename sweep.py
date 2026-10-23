@@ -18,7 +18,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uarchre.kernels.window import window_probe
-from uarchre.analysis.knee import attribute
+from uarchre.analysis.knee import STRUCT, attribute
 from uarchre.analysis.bootstrap import bootstrap_knee
 from uarchre.analysis.protocol import run_protocol
 from uarchre.analysis import anomaly
@@ -208,7 +208,7 @@ def main():
         "depth": args.depth,
         "delay": args.delay,
     }
-    est = attribute(knees, ctx)
+    est = attribute({f: k for f, k in knees.items() if f in STRUCT}, ctx)  # movimm: knee only
     # anomaly rules A1-A12 on this run's curves; the registry alone sets the flags
     widths = (
         {"default": cfg.width}

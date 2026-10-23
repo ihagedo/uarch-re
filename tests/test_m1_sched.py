@@ -22,6 +22,7 @@ import native  # noqa: E402
 from uarchre.backends.isa.aarch64 import SRC_A  # noqa: E402
 from uarchre.kernels.scheduler import (  # noqa: E402
     A64AsmEmitter,
+    alu_mix,
     dispatch_probe,
     multi_source,
     nop_stream,
@@ -32,6 +33,8 @@ from uarchre.kernels.scheduler import (  # noqa: E402
 A64 = "aarch64"
 CLOCK = 3.2e9  # Firestorm, cycles per second
 FSQRT_CYCLES = 13  # Firestorm fsqrt d latency
+HANDLEY_FP = {"fabs": 12, "fcmp": 14}  # FP dispatch buffer readings, not in firestorm.yaml
+FP_PORT_OP = {"fabs": "fp/simd", "fcmp": "fcmp"}
 
 
 def pub(path):
@@ -48,6 +51,10 @@ def class_capacity(cls):
 
 def ports(word):
     return sum(word in p["ops"].split() for p in native.published("backend.ports"))
+
+
+def pub_l1i():
+    return native.published("frontend.l1i")["size_kib"] << 10
 
 
 class TestSweepDesign(unittest.TestCase):
@@ -85,12 +92,46 @@ class TestSweepDesign(unittest.TestCase):
         rename = pub("backend.rename_width")
         rate = {"add": ports("alu"), "mul": ports("mul")}
         self.assertEqual(rate, {"add": 6, "mul": 2})
-        for x, blocks in ms.DISPATCH.items():
+        for x in rate:
+            blocks = ms.DISPATCH[x]
             q = 0.75 * ms.SIZES[x][1]  # largest buffer the block must still fill
             self.assertGreaterEqual(min(blocks) * (1 - rate[x] / rename), q, x)
             self.assertGreaterEqual(max(ms.DISPATCH_M), 1.3 * q * rename / rate[x], x)
             db = pub(f"decoupling.dispatch_buffers.{ms.DISPATCH_DB[x]}")
             self.assertLess(db * rename / rate[x], max(ms.DISPATCH_M) / 2)
+
+    def test_fp_dispatch_blocks_saturate(self):
+        """Each block outlasts every FP queue its op can use plus the larger buffer reading, and its nop
+        grid holds the hinge then and resolves one entry at Handley's readings."""
+        rename = pub("backend.rename_width")
+        rate = {x: ports(w) for x, w in FP_PORT_OP.items()}
+        self.assertEqual(rate, {"fabs": 4, "fcmp": 1})
+        flags = native.published("backend.flags_prf")["range"][0]
+        for x, r in rate.items():
+            waits = sum(ms.port_entries(FP_PORT_OP[x])) + max(HANDLEY_FP.values())
+            grid = ms.DISPATCH_GRID[x]
+            self.assertGreaterEqual(min(ms.DISPATCH[x]) * (1 - r / rename), 1.2 * waits, x)
+            self.assertGreaterEqual(max(grid), 1.3 * waits * rename / r, x)
+            for q in HANDLEY_FP.values():
+                free = q * rename / r
+                self.assertGreaterEqual(sum(m < free for m in grid), 8, x)
+                near = [b - a for a, b in zip(grid, grid[1:]) if a <= free <= b]
+                self.assertLessEqual(near[0], rename / r, x)  # one grid step per buffer entry
+            self.assertIsNone(ms.DISPATCH_DB.get(x))
+        self.assertLess(1.3 * (36 + max(HANDLEY_FP.values())), flags)  # fcmps in flight hold flags registers
+
+    def test_alu_mix_design(self):
+        """The adds alone bind (nops stay free), and 2 movs per 8 at rename slow a block by a margin
+        even when rename groups split the movs."""
+        alu, rename = ports("alu"), pub("backend.rename_width")
+        a, f = ms.ELIM["adds"], ms.ELIM["fill"]
+        self.assertEqual((a % 8, f % 8), (0, 0))  # whole rename groups
+        self.assertGreaterEqual(a / alu, 1.05 * (a + f) / rename)
+        worst = f - 2 * (f // 8 + 1)  # movs split over one more group
+        self.assertGreaterEqual((a + worst) / alu, 1.05 * a / alu)
+        self.assertGreaterEqual(min(ms.ELIM_K) * a / alu * ms.ITERS["elim"] / CLOCK, 1e-3)
+        self.assertLessEqual(max(ms.ELIM_K) * (a + f) * 4, pub_l1i() // 4)
+        self.assertEqual(ms.ELIM_FILLERS, ("nop", "movimm", "int"))
 
     def test_drain_fits_the_window(self):
         rows = native.published("backend.retire.retire_groups")["range"][0]
@@ -104,9 +145,10 @@ class TestSweepDesign(unittest.TestCase):
 
     def test_timed_regions_last_a_millisecond(self):
         dram = pub("memory.dram_latency")
+        rate = {"add": 6, "mul": 2, "fabs": 4, "fcmp": 1}
         t = {
             "sched": dram,
-            "dispatch": min(min(b) / r for b, r in ((ms.DISPATCH["add"], 6), (ms.DISPATCH["mul"], 2))),
+            "dispatch": min(min(b) / rate[x] for x, b in ms.DISPATCH.items()),
             "drain": ms.DRAIN["links"] * FSQRT_CYCLES,
             "stream": min(ms.STREAM_K) / pub("frontend.fetch_width"),
         }
@@ -132,6 +174,9 @@ def m1_kernels():
         sched_probe("fp", 3, isa=A64),
         dispatch_probe(16, 5, x="add", y="nop", isa=A64),
         dispatch_probe(8, 3, x="mul", y="nop", isa=A64),
+        dispatch_probe(8, 3, x="fabs", y="nop", isa=A64),
+        dispatch_probe(8, 3, x="fcmp", y="nop", isa=A64),
+        *(alu_mix(2, f, 16, 8, A64) for f in ms.ELIM_FILLERS),
         retire_drain(64, 24, 528, A64),
         nop_stream(64, A64),
     ]
@@ -155,6 +200,26 @@ class TestKernels(unittest.TestCase):
     def test_nop_trailer(self):
         asm = dispatch_probe(2, 3, x="mul", y="nop", isa=A64).params["asm"]
         self.assertEqual(asm, ["mul x9, x6, x7", "mul x10, x6, x7", "nop", "nop", "nop"])
+
+    def test_fp_dispatch_fillers(self):
+        self.assertEqual(dispatch_probe(2, 1, x="fabs", y="nop", isa=A64).params["asm"], [
+            "fabs d16, d30", "fabs d17, d30", "nop"
+        ])  # fmt: skip
+        self.assertEqual(
+            dispatch_probe(2, 0, x="fcmp", y="nop", isa=A64).params["asm"], ["fcmp d30, d31"] * 2
+        )
+
+    def test_alu_mix_layout(self):
+        asm = alu_mix(2, "movimm", 8, 8, A64).params["asm"]
+        self.assertEqual(len(asm), 32)
+        self.assertEqual(asm[:8], [f"add x{9 + i}, x6, x7" for i in range(8)])
+        movs = asm[8:16] + asm[24:32]
+        self.assertTrue(all(re.fullmatch(r"mov x(9|1[0-6]), #\d+", m) for m in movs), movs)
+        imms = [int(m.split("#")[1]) for m in movs]
+        self.assertEqual(len(set(imms)), 16)  # nonzero, varying, one movz each
+        self.assertTrue(all(0 < i < 1 << 16 for i in imms))
+        self.assertEqual(alu_mix(1, "nop", 8, 8, A64).params["asm"][8:], ["nop"] * 8)
+        self.assertEqual(alu_mix(1, "int", 8, 8, A64).params["asm"][8:], asm[:8])
 
     def test_m1_register_rules(self):
         em = A64AsmEmitter("cntvct")
@@ -182,11 +247,18 @@ CAPS = {"add": 100, "mul": 30, "fp": 70, "fadd": 70, "load": 50, "store": 40}
 RATIO = 7.68  # 24 MHz x 1024 ticks per 3.2 GHz cycle
 
 
+DISPATCH_Q = {"add": (6, 100), "mul": (2, 40), "fabs": (4, 12), "fcmp": (1, 14)}  # (rate, buffer)
+MOV_ALU = {"nop": 0, "int": 8, "movimm": 6}  # fillers per 8 on an ALU
+
+
 def model(p):
     """Cycles per iteration of a kernel on a toy core with the CAPS queues (mul shares add's)."""
     if "sat" in p:
-        rate, q = (6, 100) if p["x"] == "add" else (2, 40)
+        rate, q = DISPATCH_Q[p["x"]]
         return max(p["sat"] / rate, (p["sat"] - q) / rate + p["m"] / 8) + 3
+    if "mix" in p:
+        alu = p["adds"] + MOV_ALU[p["mix"]] * p["fill"] / 8
+        return p["k"] * max(alu / 6, (p["adds"] + p["fill"]) / 8) + 5
     if "links" in p:
         return p["links"] * 13 + p["k"] / 56
     if "filler" not in p:
@@ -265,6 +337,41 @@ class TestAnalysis(unittest.TestCase):
         self.assertAlmostEqual(got["dispatch.mul"]["value"], 40, delta=3)
         self.assertEqual(got["dispatch.add"]["published"], 24)
         self.assertIn("t0 = 0 applied", got["dispatch.add"]["note"])
+        for x, q in HANDLEY_FP.items():
+            row = got[f"dispatch.{x}"]
+            self.assertAlmostEqual(row["value"], q, delta=0.6, msg=x)
+            self.assertIsNone(row["published"])
+            self.assertEqual(row["flags"], [])
+        gap = got["dispatch.fcmp-fabs"]
+        self.assertAlmostEqual(gap["value"], 2, delta=0.6)
+        self.assertLessEqual(gap["ci"][0], gap["value"])
+        self.assertGreaterEqual(gap["ci"][1], gap["value"])
+        self.assertIn("Handley 14 - 12 = 2", gap["note"])
+
+    def test_dispatch_fp_one_size(self):
+        with mock.patch.dict(DISPATCH_Q, {"fabs": (4, 14)}):
+            _, rows = ms.run_sched(FakeRunner(), args("--parts", "dispatch"))
+        gap = {row["structure"]: row for row in rows}["dispatch.fcmp-fabs"]
+        self.assertAlmostEqual(gap["value"], 0, delta=0.6)
+
+    def test_movimm_alu_share(self):
+        for u in (0, 6, 8):
+            with mock.patch.dict(MOV_ALU, {"movimm": u}):
+                _, rows = ms.run_elim(FakeRunner(), args())
+            got = {row["structure"]: row for row in rows}
+            share = got["movimm.alu_share"]
+            self.assertAlmostEqual(share["value"], u, delta=0.1)
+            self.assertLessEqual(share["ci"][0], share["value"])
+            self.assertGreaterEqual(share["ci"][1], share["value"])
+            self.assertEqual(share["flags"], [])
+            self.assertEqual(share["published"], 6)
+            self.assertAlmostEqual(got["alu.rate"]["value"], 6, delta=0.05)
+            self.assertEqual(got["alu.rate"]["published"], 6)
+
+    def test_movimm_rename_bound_is_flagged(self):
+        with mock.patch.dict(ms.ELIM, {"adds": 40, "fill": 24}):
+            _, rows = ms.run_elim(FakeRunner(), args())
+        self.assertIn("shape.nop_reference", rows[0]["flags"])
 
     def test_retire(self):
         _, rows = ms.run_retire(FakeRunner(), args())
@@ -283,6 +390,23 @@ class TestCLI(unittest.TestCase):
         self.assertEqual((a.pocs, a.fp_filler, a.parts, a.gem5_smoke), (["P1.7"], "fadd", "sizes", True))
         self.assertEqual(set(ms.POCS), set(ms.EST_MIN))
         self.assertEqual(ms.FAMILY, "sched")
+        self.assertEqual(ms.build_parser().parse_args(["P1.6-movimm"]).pocs, ["P1.6-movimm"])
+        self.assertIn("dispatch", ms.DEFAULTS["parts"].split(","))
+        self.assertTrue(
+            {"fabs", "fcmp"} <= set(ms.DISPATCH) and {"fabs", "fcmp"} <= set(ms.SMOKE["dispatch"])
+        )
+
+    def test_kernels_cli_runs_one_part(self):
+        import m1_kernels
+
+        seen = []
+        with (
+            mock.patch.dict(ms.POCS, {"P1.6-movimm": lambda r, a: seen.append(a.pocs) or ({}, [])}),
+            mock.patch.object(native.Runner, "save", lambda *a: "out"),
+            mock.patch("builtins.print"),
+        ):
+            m1_kernels.main(["run", "sched", "P1.6-movimm", "--gem5-smoke"])
+        self.assertEqual(seen, [["P1.6-movimm"]])
 
     def test_unknown_poc(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
@@ -301,6 +425,11 @@ def _sources():
         sched_probe("fadd", 40, isa=A64),
         sched_probe("store", 20, pre="load", m=40, isa=A64),
         dispatch_probe(max(ms.DISPATCH["add"]), max(ms.DISPATCH_M), x="add", y="nop", isa=A64),
+        *(
+            dispatch_probe(max(ms.DISPATCH[x]), max(g), x=x, y="nop", isa=A64)
+            for x, g in ms.DISPATCH_GRID.items()
+        ),
+        *(alu_mix(max(ms.ELIM_K), f, ms.ELIM["adds"], ms.ELIM["fill"], A64) for f in ms.ELIM_FILLERS),
         retire_drain(max(ms.DRAIN_K), ms.DRAIN["links"], ms.DRAIN["exhaust"], A64),
         nop_stream(max(ms.STREAM_K), A64),
     ]

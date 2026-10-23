@@ -10,7 +10,7 @@ frontend:
   fetch_width:         {value: 8, unit: instr/cycle, provenance: inferred, sources: [dougallj-firestorm, handley-m1-explainer],
                         note: "NOP stream runs at 8/cycle"}
   taken_branches_per_cycle: {value: 1, provenance: inferred, sources: [dougallj-firestorm]}
-  l1i:                 {size_kib: 192, provenance: inferred, sources: [7cpu-m1]}
+  l1i:                 {size_kib: 192, line_bytes: 64, provenance: inferred, sources: [7cpu-m1, pacman-2022, ileakage-2023]}
   btb_levels:
     - {name: l0, entries: 1024, taken_bubble_cycles: 0, provenance: inferred, sources: [handley-m1-explainer],
        note: "from third-party studies Handley cites, not his own M1 measurement"}
