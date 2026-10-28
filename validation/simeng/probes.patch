@@ -1,0 +1,27 @@
+diff --git a/src/include/simeng/arch/aarch64/ArchInfo.hh b/src/include/simeng/arch/aarch64/ArchInfo.hh
+index b7f27403..52aebb2e 100644
+--- a/src/include/simeng/arch/aarch64/ArchInfo.hh
++++ b/src/include/simeng/arch/aarch64/ArchInfo.hh
+@@ -20,2 +20,6 @@ class ArchInfo : public simeng::arch::ArchInfo {
+                            aarch64_sysreg::AARCH64_SYSREG_PMCCNTR_EL0,
++                           aarch64_sysreg::AARCH64_SYSREG_PMCR_EL0,
++                           aarch64_sysreg::AARCH64_SYSREG_PMCNTENSET_EL0,
++                           aarch64_sysreg::AARCH64_SYSREG_PMEVTYPER0_EL0,
++                           aarch64_sysreg::AARCH64_SYSREG_PMEVCNTR0_EL0,
+                            aarch64_sysreg::AARCH64_SYSREG_SVCR,
+diff --git a/src/lib/arch/aarch64/Instruction_execute.cc b/src/lib/arch/aarch64/Instruction_execute.cc
+index f2d57567..85c8fd8e 100644
+--- a/src/lib/arch/aarch64/Instruction_execute.cc
++++ b/src/lib/arch/aarch64/Instruction_execute.cc
+@@ -3299,2 +3299,11 @@ void Instruction::execute() {
+       }
++      case Opcode::AArch64_CHKFEAT: {  // chkfeat x16: no feature enabled
++        for (uint16_t i = 0;
++             i < destinationRegisterCount_ && i < sourceRegisterCount_; i++)
++          results_[i] = sourceValues_[i];
++        break;
++      }
++      case Opcode::AArch64_ISB: {  // isb
++        break;
++      }
+       case Opcode::AArch64_HINT: {  // nop|yield|wfe|wfi|etc...
