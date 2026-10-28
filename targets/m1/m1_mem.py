@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """P2 memory probes on Apple silicon: caches and SLC, TLBs, MLP and bandwidth, prefetch, disambiguation.
 
-    python3 targets/m1/m1_mem.py --tag m1 [P2.1 P2.1-slc P2.2 P2.2-ways P2.3 P2.3-bw P2.4 P2.5]
+    python3 targets/m1/m1_mem.py --tag m1 [P2.1 P2.1-slc P2.1-store P2.2 P2.2-ways P2.3 P2.3-fill P2.3-bw
+        P2.4 P2.5]
     python3 targets/m1/m1_mem.py --gem5-smoke --tag smoke
 
 Sweeps bracket spec/cores/firestorm.yaml with margin, each point timed in several clocked launches
@@ -35,6 +36,7 @@ MD_NMAX = 508  # memdep buffer: the no-alias loads sit 8 KiB up in a 16 KiB buff
 DRAM_TOL = 0.05  # a window chain is a DRAM miss within 5 % of the random chain's latency
 PREFETCHED = 0.5  # a dependent stride chain at under half the random chain's latency
 MLP_K = list(range(1, 17)) + list(range(18, 33, 2)) + list(range(36, 57, 4))
+FILL_K = list(range(1, 13)) + [14, 16] + list(range(20, 53, 4))  # x28 holds the second load's offset
 SLC_EDGE = (0.25, 0.5, 0.85)  # DRAM fractions of the reverse probe that place the edge
 SLC_STEP = 0.35  # edge width below this: a step (LRU); from simulated L2 + exclusive SLC, 8 to 16 ways
 GEM5_HZ = 2e9  # config_o3.py --clock
@@ -65,6 +67,7 @@ def plan(smoke=False):
                 conflict_k=list(range(1, 11)),
                 conflict_nloads=1000,
             ),
+            "P2.1-store": dict(node=64, F=8 * KB, x=128 * KB, reps=4),  # gem5 L1D 32 KiB, L2 256 KiB
             # no SLC: the probe reads gem5's L2 (LRU, 8 ways, 64 B lines; hit = its load-to-use)
             "P2.1-slc": dict(
                 F=[256 * KB, 320 * KB, 384 * KB, 512 * KB],
@@ -78,6 +81,7 @@ def plan(smoke=False):
             "P2.2": dict(page=[16, 64, 256], nloads=1000, code=[4, 16, 64], njumps=1000, fine_cap=3, reps=2),
             "P2.2-ways": dict(K=[32, 16, 1], N=[2, 4, 6, 8, 12], nloads=1000, reps=2),
             "P2.3": dict(F=4 * MB, iters=100, reps=1, x=None, K=[1, 2, 4, 8, 12, 16, 24]),
+            "P2.3-fill": dict(F=4 * MB, iters=100, reps=1, x=None, K=[1, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32]),
             "P2.3-bw": dict(bytes=4 * MB, passes=2, streams=list(M.BW_STREAMS), launches=1, peak=12.8),
             "P2.4": dict(
                 F=2 * MB,
@@ -107,6 +111,7 @@ def plan(smoke=False):
             conflict_k=list(range(1, 33)),
             conflict_nloads=2_000_000,
         ),
+        "P2.1-store": dict(node=native.published("memory.l1d.line_bytes"), F=64 * KB, x=1 * MB, reps=400),
         "P2.1-slc": dict(
             F=geom(4 * MB, 40 * MB, 4, 64 * KB),
             node=128,
@@ -126,6 +131,7 @@ def plan(smoke=False):
         ),
         "P2.2-ways": dict(K=[32, 16, 1], N=list(range(2, 57)), nloads=2_000_000, reps=5),
         "P2.3": dict(F=512 * MB, iters=12000, reps=3, x=64 * MB, K=MLP_K),
+        "P2.3-fill": dict(F=384 * MB, iters=12000, reps=3, x=64 * MB, K=FILL_K),  # 2F with the far copy
         "P2.3-bw": dict(bytes=1 << 30, passes=10, streams=list(M.BW_STREAMS), launches=5, peak=None),
         "P2.4": dict(
             F=256 * MB,
@@ -377,6 +383,53 @@ def analyze_caches(raw):
     return rows
 
 
+def run_store(r, args):
+    """L1D store-miss allocate: a chase after nothing, loads, partial stores and whole-line stores."""
+    p, n = plan(args.gem5_smoke)["P2.1-store"], launches(args)
+    b = r.compile(M.chase_source("aarch64", r.counter), "memprobe")
+    head = ["store", p["node"], p["F"], p["x"], p["reps"]]
+    raw = {"plan": p, "launches": sweep(r, b, head, list(STORE_V), "P2.1-store", n)}
+    return raw, analyze_store(raw)
+
+
+STORE_V = {0: "nothing", 1: "loads", 2: "stores", 3: "whole-line stores"}
+
+
+def analyze_store(raw):
+    """Per launch, the chase's cycles per load after each pass; stores read as the fraction of the
+    way from the L2 level (0, written around) to the L1D level (1, allocated)."""
+    per = []
+    for lr in raw["launches"]:
+        c = {v: statistics.median(lr["runs"][f"store{v}"][str(raw["plan"]["F"])][1:]) for v in STORE_V}
+        per.append(c)
+    c0, c1 = (statistics.median(c[v] for c in per) for v in (0, 1))
+    ok = c0 - c1 >= 5  # the chase must see the L2 after the eviction and the L1D after loads
+    rows = [
+        row(
+            "store test: chase after nothing",
+            c0,
+            spread(c[0] for c in per),
+            "cycles",
+            "memory.l2.latency_cycles",
+        ),
+        row(
+            "store test: chase after loads",
+            c1,
+            spread(c[1] for c in per),
+            "cycles",
+            "memory.l1d.latency_cycles",
+        ),
+    ]
+    p = raw["plan"]
+    note = f"{size(p['F'])} of {p['node']} B lines; 1: allocated in the L1D, 0: written around"
+    for v, what in ((2, "a word per line, random order"), (3, "whole lines, address order")):
+        a = [(c[0] - c[v]) / (c[0] - c[1]) for c in per] if ok else []
+        flags = [] if ok else ["no L2 / L1D contrast"]
+        value = statistics.median(a) if a else None
+        rows.append(row(f"store miss allocate: {what}", value, spread(a), "fraction", None, flags, note))
+    return rows
+
+
 def run_slc(r, args):
     p, n = plan(args.gem5_smoke)["P2.1-slc"], launches(args)
     b = r.compile(M.chase_source("aarch64", r.counter), "memprobe")
@@ -622,6 +675,41 @@ def analyze_mlp(raw):
     ]
 
 
+def run_fill(r, args):
+    """P2.3 with a second load per step: in the chase line (o=8) or in a far copy of the buffer (o=F)."""
+    p, n = plan(args.gem5_smoke)["P2.3-fill"], launches(args)
+    b = r.compile(M.chase_source("aarch64", r.counter), "memprobe")
+    x = [f"x={p['x']}"] if p["x"] else []
+    raw = {"plan": p}
+    for where, o in (("line", 8), ("far", p["F"])):
+        ks = list(p["K"])
+        random.Random(1).shuffle(ks)
+        head = lambda i, o=o: ["mlp", p["F"], p["iters"], p["reps"], i, *x, f"o={o}"]  # noqa: E731
+        raw[where] = merge([sweep(r, b, head, [k], f"P2.3-fill {where} K={k}", n) for k in ks])
+    return raw, analyze_fill(raw)
+
+
+def analyze_fill(raw):
+    rows, got = [], {}
+    for where, label in (("line", "in the chase line"), ("far", "in another line")):
+        reads = [mem_mlp.reading(ks, ts) for ks, ts in each(raw[where], "mlp") if len(ks) >= 5]
+        name = f"misses in flight, second load {label}"
+        if not reads:
+            rows.append(row(name, None, None, "chains", None, ["no data"]))
+            continue
+        got[where] = statistics.median(x["reading"] for x in reads)
+        why = sorted({w for x in reads for w in x["why"]})
+        note = "two loads per chain step; K random chains over " + size(raw["plan"]["F"])
+        note += "".join(f"; {w}" for w in why)
+        rows.append(row(name, got[where], spread(x["reading"] for x in reads), "chains", None,
+                        ["lower bound"] if why else [], note))  # fmt: skip
+    ok = len(got) == 2 and got["far"] > 0
+    note = "2: the line's two loads share an entry (one per line); 1: one entry per miss"
+    rows.append(row("fill buffer: line / far reading", got["line"] / got["far"] if ok else None, None,
+                    "ratio", None, [] if ok else ["no data"], note))  # fmt: skip
+    return rows
+
+
 def run_bw(r, args):
     p = plan(args.gem5_smoke)["P2.3-bw"]
     n = launches(args) if args.gem5_smoke else max(p["launches"], launches(args))
@@ -820,14 +908,27 @@ def analyze_memdep(raw):
 POCS = {
     "P2.1": run_caches,
     "P2.1-slc": run_slc,
+    "P2.1-store": run_store,
     "P2.2": run_tlbs,
     "P2.2-ways": run_tlbways,
     "P2.3": run_mlp,
+    "P2.3-fill": run_fill,
     "P2.3-bw": run_bw,
     "P2.4": run_prefetch,
     "P2.5": run_memdep,
 }
-EST_MIN = {"P2.1": 5, "P2.1-slc": 1, "P2.2": 2, "P2.2-ways": 1, "P2.3": 3, "P2.3-bw": 1, "P2.4": 1, "P2.5": 1}
+EST_MIN = {
+    "P2.1": 5,
+    "P2.1-slc": 1,
+    "P2.1-store": 1,
+    "P2.2": 2,
+    "P2.2-ways": 1,
+    "P2.3": 3,
+    "P2.3-fill": 5,
+    "P2.3-bw": 1,
+    "P2.4": 1,
+    "P2.5": 1,
+}
 
 
 def launches(args):

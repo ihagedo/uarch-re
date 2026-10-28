@@ -28,7 +28,8 @@ from uarchre.kernels import memory as M  # noqa: E402
 KB, MB = 1 << 10, 1 << 20
 RATIO = 7.5  # counter ticks per core cycle in the canned output
 TRUTH = dict(l1d=128 * KB, l2=8 * MB, l1_line=64, l2_line=128, ways=8, dtlb=160, stlb=3072, itlb=192)
-TRUTH.update(mlp=20, pairs=200, fwd=5.0, dram=320.0)
+TRUTH.update(mlp=20, pairs=200, fwd=5.0, dram=320.0, fill=1)  # fill: entries per line for two loads
+TRUTH.update(store=1.0, whole=0.0)  # L1D allocation on partial and whole-line store misses
 TRUTH.update(tlb_ways=4, tlb_victim=32, fwd2=6.0, bw=60.0, bw2=63.0, slc="lru")
 HZ = 24576000  # counter_hz in the canned output
 
@@ -92,8 +93,15 @@ def model(argv, t=None):
         for p in (int(x) for x in a[2:] if not x.startswith("d=")):
             emit("code", p, 2 + 5 * (p > 1536) + (0 if dense else 10 * ramp(p, TRUTH["itlb"], 0.05)), a[1])
     elif mode == "mlp":
+        o = next((int(x[2:]) for x in a if x.startswith("o=")), None)
+        per = 1 if o is None else 2 if o >= 128 else t["fill"]  # misses each chain step holds
         for k in (int(x) for x in a[4:] if "=" not in x):
-            emit("mlp", k, TRUTH["dram"] * max(1, k / TRUTH["mlp"]), a[2])
+            emit("mlp", k, TRUTH["dram"] * max(1, k * per / TRUTH["mlp"]), a[2])
+    elif mode == "store":
+        l1, l2 = 3.0, 18.0
+        after = {0: l2, 1: l1, 2: l2 - t["store"] * (l2 - l1), 3: l2 - t["whole"] * (l2 - l1)}
+        for v in map(int, a[4:]):
+            emit(f"store{v}", a[1], after[v], a[3])
     elif mode == "indep":
         emit("indep", int(a[4]), 1.5, a[2])
     elif mode == "wchain":
@@ -197,6 +205,27 @@ class TestPlan(unittest.TestCase):
         self.assertLessEqual(max(p["K"]), M.MLP_A64_KMAX)
         self.assertGreaterEqual(p["F"], 16 * (12 + 8) * MB)
         self.assertGreaterEqual(p["iters"] * 300 / 3.2e9, 1e-3)
+
+    def test_store(self):
+        p, l1d = self.p["P2.1-store"], native.published("memory.l1d.size_kib") * KB
+        self.assertEqual(p["node"], native.published("memory.l1d.line_bytes"))
+        self.assertLessEqual(p["F"], l1d // 2)  # fits the L1D with room for the probe's own lines
+        self.assertEqual(p["F"] // p["node"] % 16, 0)  # whole UNROLL blocks
+        self.assertGreaterEqual(p["x"], 4 * l1d)
+        self.assertLessEqual(
+            p["x"], native.published("memory.l2.size_mib") * MB // 8
+        )  # the lines stay in the L2
+        s = T.plan(smoke=True)["P2.1-store"]
+        self.assertLessEqual((s["F"], 4 * 32 * KB), (16 * KB, s["x"]))  # gem5: 32 KiB L1D
+        self.assertLess(s["x"], 256 * KB)
+
+    def test_fill(self):
+        p, q = self.p["P2.3-fill"], self.p["P2.3"]
+        self.assertLess((p["reps"] + 1) * p["iters"], p["F"] // 128 // max(p["K"]))
+        self.assertLessEqual(max(p["K"]), M.MLP2_A64_KMAX)
+        self.assertGreaterEqual(p["F"], 16 * (12 + 8) * MB)
+        self.assertLessEqual(2 * p["F"] + p["x"], 1 << 30)  # the far copy doubles the buffer
+        self.assertGreaterEqual(sum(k > max(q["K"]) / 2 for k in p["K"]), 6)  # a far plateau at P2.3's top
 
     def test_prefetch_and_memdep(self):
         p = self.p["P2.4"]
@@ -337,6 +366,27 @@ class TestEndToEnd(unittest.TestCase):
         self.assertAlmostEqual(rows["L2 TLB miss penalty"]["value"], 20, delta=0.5)
         self.assertIn("16384 B pages", rows["L1 dTLB entries"]["note"])
         self.assertTrue(any(a[0] == "code" and "d=1" in a for a in self.r.argvs))
+
+    def test_store(self):
+        for store, whole in ((1.0, 1.0), (1.0, 0.0), (0.0, 0.0)):
+            raw, rows = self.run_poc("P2.1-store", store=store, whole=whole)
+            self.assertEqual(rows["store test: chase after nothing"]["value"], 18)
+            self.assertEqual(rows["store test: chase after loads"]["value"], 3)
+            forms = ("a word per line, random order", "whole lines, address order")
+            got = [rows[f"store miss allocate: {w}"]["value"] for w in forms]
+            self.assertEqual(got, [store, whole])
+        self.assertEqual({a[0] for a in self.r.argvs}, {"store"})
+
+    def test_fill(self):
+        for fill, ratio in ((1, 2.0), (2, 1.0)):
+            raw, rows = self.run_poc("P2.3-fill", fill=fill)
+            line, far = (
+                rows[f"misses in flight, second load in {w}"]["value"]
+                for w in ("the chase line", "another line")
+            )
+            self.assertEqual((line, far), (TRUTH["mlp"] / fill, TRUTH["mlp"] / 2))
+            self.assertAlmostEqual(rows["fill buffer: line / far reading"]["value"], ratio)
+        self.assertTrue({"o=8", f"o={raw['plan']['F']}"} <= {x for a in self.r.argvs for x in a})
 
     def test_mlp(self):
         raw, rows = self.run_poc("P2.3")

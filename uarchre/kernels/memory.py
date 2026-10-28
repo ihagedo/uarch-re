@@ -18,6 +18,7 @@ MLP_KMAX = MLP_FP_CHAINS + MLP_INT_CHAINS
 MLP_A64_FP = 31
 MLP_A64_INT = [f"x{i}" for i in [*range(3, 18), *range(19, 29)]]
 MLP_A64_KMAX = MLP_A64_FP + len(MLP_A64_INT)
+MLP2_A64_KMAX = MLP_A64_KMAX - 1  # x28 holds the second load's offset
 MLP_INT_REGS = [
     "t1",
     "t2",
@@ -555,16 +556,77 @@ def _mlp_aarch64():
         )
         table.append(f"mlp_{k}")
     fns.append(f"static void (*const MLP_FN[{MLP_A64_KMAX + 1}])(uint64_t *) = {{0, {', '.join(table)}}};")
+    fns += _mlp2_aarch64()
     node_arg = (
         "    size_t node = 128;                  /* one node per 128 B line; n=<bytes> overrides */\n"
         '    for (int a = 6; a < argc; a++) if (!strncmp(argv[a], "n=", 2)) node = parse(argv[a] + 2);\n'
     )
+    main = _MLP_MAIN
+    for a, b in _MLP_SIB.items():
+        assert a in main, a
+        main = main.replace(a, b)
     fns.append(
-        _MLP_MAIN.replace("@KMAX@", str(MLP_A64_KMAX))
+        main.replace("@KMAX2@", str(MLP2_A64_KMAX))
+        .replace("@KMAX@", str(MLP_A64_KMAX))
         .replace("@NODE_ARG@", node_arg)
         .replace("@NODE@", "node")
     )
     return "\n".join(fns)
+
+
+# o=<bytes> (aarch64): each chain step also loads the word that far from the node, in its line (o=8)
+# or in a copy of the buffer (o=F), so two loads share or split a fill-buffer entry
+_MLP_SIB = {
+    "@NODE_ARG@": "@NODE_ARG@    size_t sib = 0;\n"
+    '    for (int a = 6; a < argc; a++) if (!strncmp(argv[a], "o=", 2)) sib = parse(argv[a] + 2);\n',
+    "alloc(F + @NODE@, 0)": "alloc(F + sib + @NODE@, 0)",
+    "    uint64_t ctx[1 + @KMAX@];": (
+        "    if (sib >= @NODE@)  /* the second loads' lines: written, so lines of their own */\n"
+        "        for (size_t o = 0; o < F; o += @NODE@) *(uint64_t *)(buf + o + sib) = o;\n"
+        "    uint64_t ctx[2 + @KMAX@];"
+    ),
+    "        (void)sink;": (
+        "        if (sib >= @NODE@)\n"
+        "            for (size_t o = 0; o < F; o += @NODE@) sink += *(volatile uint64_t *)(buf + o + sib);\n"
+        "        (void)sink;"
+    ),
+    "K > @KMAX@)": "K > (sib ? @KMAX2@ : @KMAX@))",
+    "        ctx[0] = iters;                     /* warm-up": "        ctx[1 + @KMAX@] = sib;\n"
+    "        ctx[0] = iters;                     /* warm-up",
+    "MLP_FN[K](ctx);": "(sib ? MLP2_FN : MLP_FN)[K](ctx);",
+}
+
+
+def _mlp2_aarch64():
+    """_mlp_aarch64 with a second load per step at x28 = ctx[1 + KMAX] bytes from the node, issued
+    with the chase load; x28 leaves the chain registers."""
+    regs = [r for r in MLP_A64_INT if r != "x28"]
+    fns, table = [], []
+    for k in range(1, MLP2_A64_KMAX + 1):
+        body = ["ldr x1, [%0]", f"ldr x28, [%0, #{8 * (1 + MLP_A64_KMAX)}]"]
+        for j in range(k):
+            r = f"d{j}" if j < MLP_A64_FP else regs[j - MLP_A64_FP]
+            body.append(f"ldr {r}, [%0, #{8 * (j + 1)}]")
+        body += ["mov x2, x1", "fmov d31, x1", "cmp x1, x2", ".p2align 6", "1:"]
+        for j in range(k):
+            if j < MLP_A64_FP:
+                body += [f"fmov x2, d{j}", "ldr d31, [x2, x28]", "ldr x2, [x2]", f"fmov d{j}, x2"]
+            else:
+                r = regs[j - MLP_A64_FP]
+                body += [f"fmov d31, {r}", f"fmov {r}, d31", f"ldr x2, [{r}, x28]", f"ldr {r}, [{r}]"]
+        body += ["subs x1, x1, #1", "b.ne 1b"]
+        for j in range(k):
+            r = f"d{j}" if j < MLP_A64_FP else regs[j - MLP_A64_FP]
+            body.append(f"str {r}, [%0, #{8 * (j + 1)}]")
+        clob_s = ", ".join(f'"{c}"' for c in ["x1", "x2"] + MLP_A64_INT + [f"v{i}" for i in range(32)])
+        fns.append(
+            f'static void mlp2_{k}(uint64_t *ctx) {{\n    register uint64_t *c __asm__("x0") = ctx;\n'
+            f"    __asm__ __volatile__(\n{_asm(body)}\n"
+            f'        :: "r"(c) : "memory", "cc", {clob_s});\n}}'
+        )
+        table.append(f"mlp2_{k}")
+    fns.append(f"static void (*const MLP2_FN[{MLP_A64_KMAX + 1}])(uint64_t *) = {{0, {', '.join(table)}}};")
+    return fns
 
 
 _A64_CYCLES = r"""
@@ -799,6 +861,51 @@ static int bw_main(int argc, char **argv) {
     free(buf);
     return 0;
 }
+
+/* store <node> <F> <xbytes> <reps> V...: a random chain over F / node lines, small enough for the L1D.
+   Per rep: read an xbytes buffer (the lines leave the L1D, not the L2), then V = 0 nothing, 1 load a word
+   of each line, 2 store a word of each line (both in a second random order), 3 store each line whole in
+   address order; dsb; then one timed pass of the chain. Prints "R store<V> <F> <rep> <ticks per load>". */
+static int store_main(int argc, char **argv) {
+    size_t node = parse(argv[2]), F = parse(argv[3]), xb = parse(argv[4]);
+    int reps = atoi(argv[5]);
+    size_t n = F / node / UNROLL * UNROLL;
+    char *buf = alloc(F + node, 0), *x = alloc(xb, 0);
+    size_t *perm = cyclic(n, 0x5151 + F), *order = cyclic(n, 0x6161 + F);
+    void **next = malloc(n * sizeof(void *));
+    for (size_t i = 0; i < n; i++) next[perm[i]] = buf + perm[(i + 1) % n] * node;
+    for (size_t i = 0; i < n; i++) *(void **)(buf + i * node) = next[i];
+    void *p = buf + perm[0] * node;
+    for (int a = 6; a < argc; a++) {
+        int V = atoi(argv[a]);
+        double *v = malloc(reps * sizeof(double));
+        for (int r = 0; r < reps; r++) {
+            slc_evict(x, xb, node);
+            uint64_t s = 0;
+            for (size_t i = 0; V == 1 && i < n; i++) s += *(volatile uint64_t *)(buf + order[i] * node + 8);
+            for (size_t i = 0; V == 2 && i < n; i++) *(volatile uint64_t *)(buf + order[i] * node + 8) = s + i;
+            for (size_t i = 0; V == 3 && i < n; i++) {
+                volatile uint64_t *w = (volatile uint64_t *)(buf + i * node);
+                w[0] = (uint64_t)next[i];
+                for (size_t k = 1; k < node / 8; k++) w[k] = i;
+            }
+            slc_sink += s;
+            __asm__ __volatile__("dsb sy" ::: "memory");
+            uint64_t t0 = cycles();
+            p = chase(p, n);
+            uint64_t t1 = cycles();
+            v[r] = (double)(t1 - t0) / (double)n;
+        }
+        __asm__ __volatile__("" :: "r"(p));
+        for (int r = 0; r < reps; r++) printf("R store%d %zu %d %.4f\n", V, F, r, v[r]);
+        fflush(stdout);
+        free(v);
+    }
+    free(perm);
+    free(order);
+    free(next);
+    return 0;
+}
 """  # noqa: E501
 BW_STREAMS = (1, 2)
 
@@ -841,11 +948,12 @@ _A64 = {  # 128 B lines and the OS page size (16 KiB on Apple silicon); the code
     "     code <njumps> <reps> [d=1] P...                              a jump chain over P code pages\n"
     "     tlbway <nloads> <reps> <K> <dense> N...                      a node in every K-th page\n"
     "     slc <node> <per> <reps> <xbytes> F...                        fill, then probe in reverse\n"
-    "     bw <bytes> <passes> S...                                     streaming reads, S streams",
+    "     bw <bytes> <passes> S...                                     streaming reads, S streams\n"
+    "     store <node> <F> <xbytes> <reps> V...                        a chain after loads or stores",
     "@MODES@": '    } else if (!strcmp(mode, "code")) {\n        return code_main(argc, argv);\n'
     + "".join(
         f'    }} else if (!strcmp(mode, "{m}")) {{\n        return {m}_main(argc, argv);\n'
-        for m in ("tlbway", "slc", "bw")
+        for m in ("tlbway", "slc", "bw", "store")
     ),
 }
 _A64_WARM = {
