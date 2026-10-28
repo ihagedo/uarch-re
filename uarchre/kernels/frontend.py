@@ -366,6 +366,11 @@ int main(int argc, char **argv) {{
 #endif
     char *code = mmap(0, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
     if (code == MAP_FAILED) {{ perror("mmap"); return 1; }}
+#ifdef __APPLE__
+    pthread_jit_write_protect_np(0);
+#endif
+    /* touch every page in address order, so frames handed out in order keep the stride physically */
+    for (size_t b = 0; b < bytes; b += 4096) code[b] = 0;
     size_t *order = malloc(nmax * sizeof *order);
     uint64_t s = seed * 0x9E3779B97F4A7C15ull + 0x1234567ull;
     double v[64];

@@ -102,6 +102,7 @@ class FakeRunner:
         lines = ["counter_hz 24576000.0"]
         for n in ns:
             cpj = 1 + (2 + 18 * set_misses(n, stride, self.l1i, frames)) / n
+            cpj += 2 if n > self.l1i.get("btb", n) else 0  # every jump misses a BTB set
             for r in range(reps):
                 lines.append(f"pt {n} rep {r} cyc {cpj * RATIO * (1 + self.rng.gauss(0, self.noise)):.4f}")
         return "\n".join(lines) + "\n"
@@ -313,6 +314,16 @@ class TestOnModel(unittest.TestCase):
         for s in (16, 32, 64):
             lo, hi = rs[f"frontend.l1i.ways[{s}KiB]"]["ci"]
             self.assertTrue(6 <= lo < hi <= 12, (s, lo, hi))  # the knee moves between launches
+        src = r.last_src
+        self.assertLess(src.index("code[b] = 0"), src.index("/* b t */"))  # pages touched in address order
+
+    def test_ways_btb_rise_is_not_a_knee(self):
+        """No L1i conflict up to 24 lines, only BTB misses past 15: no ways reading."""
+        r = FakeRunner(l1i={"size": 192 << 10, "ways": 48, "index": "virtual", "btb": 15})
+        for row in run(m1_fe.run_ways, r)[1]:
+            self.assertEqual(
+                (row["value"], row["ci"], row["flags"]), (None, None, ["no rise"]), row["structure"]
+            )
 
     def test_ways_reports_missing_points(self):
         r = FakeRunner()

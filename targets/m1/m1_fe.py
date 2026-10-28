@@ -408,6 +408,9 @@ WAYS_NOTES = {
 }
 
 
+MISS_RISE = 8  # cycles per jump, largest N over smallest: an L2 fetch costs ~17 on M1, a BTB miss a few
+
+
 def ways_knee(ns, cpu):
     """capacity_search over one launch's cycles per jump {N: [reps]}: (last N without misses, result)."""
     y = {n: statistics.median(cpu[n]) for n in ns}
@@ -447,6 +450,9 @@ def run_ways(r, args):
         y = {n: statistics.median(statistics.median(x["cpu"][n]) for x in ls) for n in (lo, hi)}
         note = WAYS_NOTES.get(s, "ways at a stride of a way or more, twice that at half a way")
         note += f"; cycles per jump {y[lo]:.2f} at N={lo}, {y[hi]:.2f} at {hi}"
+        if y[hi] - y[lo] < MISS_RISE:
+            knees, flags = [], flags + ["no rise"]
+            note += f"; a rise under {MISS_RISE} cycles is not an L1i miss (BTB)"
         summary.append(
             row(
                 f"frontend.l1i.ways[{s >> 10}KiB]",
