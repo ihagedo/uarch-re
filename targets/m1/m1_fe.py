@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Frontend kernels on Apple silicon, timing only: P3.1 width, P3.2 L1i, P3.3 BTB levels, P3.7 mispredicts.
+"""Frontend kernels on Apple silicon, timing only: width, L1i, BTB levels, mispredicts, loop buffer.
 
-    python3 targets/m1/m1_fe.py [P3.1 P3.1-page P3.2 P3.2-ways P3.3 P3.7] [--tag m1] [--gem5-smoke]
+    python3 targets/m1/m1_fe.py [P3.1 P3.1-page P3.2 P3.2-ways P3.2-repl P3.3 P3.7 P3.10] [--tag m1]
+        [--gem5-smoke]
 
 Kernels and analysis are the gem5 campaigns' (validation/gem5/fe_*.py). A point is several launches in
 shuffled order; capacity searches run serially with tau floored at TAU_SIGMAS x the bootstrapped noise.
@@ -23,8 +24,10 @@ import native  # noqa: E402
 sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5"))
 from fe_common import capacity_search, geom_grid  # noqa: E402
 from uarchre.kernels.frontend import A64, harness_c, jump_chain, lap_excess, onset, parse_reps  # noqa: E402
-from uarchre.kernels.frontend import page_loop, random_branches, step_period, straight_nops  # noqa: E402
-from uarchre.kernels.frontend import stride_chain_source, width_estimate, width_loop  # noqa: E402
+from uarchre.kernels.frontend import lb_loop, page_loop, random_branches, step_period, straight_nops  # noqa: E402
+from uarchre.analysis.replacement import misses, policies, reset, sequences  # noqa: E402
+from uarchre.kernels.frontend import repl_chain_source, stride_chain_source  # noqa: E402
+from uarchre.kernels.frontend import width_estimate, width_loop  # noqa: E402
 from uarchre.kernels.predictors import parse_points  # noqa: E402
 
 FAMILY = "fe"
@@ -62,6 +65,10 @@ M1 = {
         "reps": 5,
         "launches": 8,
     },
+    # L = 4 mod 8, 12..252: a loop buffer saves half a cycle an iteration on an 8-wide fetch
+    "lb": {"Ls": [8 * k + 4 for k in range(1, 32)], "laps": 1 << 22},
+    # lines 64 KiB apart share a set for 6 or 12 ways; at most 16 visits a period (one per word of a line)
+    "repl": {"stride": 64 << 10, "ns": list(range(2, 17)), "work": 1 << 22, "reps": 5, "launches": 3},
     "jump": {"n": 512, "seeds": [0, 1, 2], "laps": 1 << 14},
     "btb": {
         "grid": geom_grid(128, 4096, 4),
@@ -96,6 +103,8 @@ SMOKE = {
         "reps": 2,
         "launches": 1,
     },
+    "repl": {"stride": 4 << 10, "ns": list(range(2, 17)), "work": 1 << 13, "reps": 2, "launches": 1},
+    "lb": {"Ls": [8 * k + 4 for k in range(1, 9)], "laps": 2000},
     "jump": {"n": 512, "seeds": [0], "laps": 64},
     "btb": {
         "grid": geom_grid(256, 4096, 2),
@@ -467,6 +476,105 @@ def run_ways(r, args):
     return {"plan": w, "line": line, "launches": {str(s): v for s, v in launches.items()}}, summary
 
 
+LB_BELOW = 0.25  # cycles an iteration under the fetch staircase that count as replayed
+
+
+def run_lb(r, args):
+    """P3.10: lb_loop(L), L = 4 mod 8 across fetch blocks, mix filler. Fetch alone takes ceil(L / width)
+    cycles an iteration; a loop buffer that replays across iterations L / width. The capacity is the
+    longest L of the leading run below the staircase."""
+    p = plan(r)
+    w, width = p["lb"], published("frontend.fetch_width")[0]
+    pts = {L: point(r, lb_loop(L, isa=A64), w["laps"], p["reps"], p["outer"]) for L in w["Ls"]}
+    cpi = {L: value(pts[L]) for L in w["Ls"]}
+    below = [cpi[L] < -(-L // width) - LB_BELOW for L in w["Ls"]]
+    n = below.index(False) if False in below else len(below)
+    cap = w["Ls"][n - 1] if n else None
+    flags = ["lb.present" if n else "lb.absent"] + unaccepted(pts.values())
+    flags += ["lb.gaps"] if any(below[n:]) else []
+    ci = [cap, w["Ls"][n] - 1 if n < len(below) else None] if n else None
+    note = f"cycles an iteration (staircase ceil(L / {width})): "
+    note += ", ".join(f"{L} {cpi[L]:.2f}" for L in w["Ls"])
+    row_ = row("frontend.loop_buffer.capacity", cap, ci, "instructions", (None, ""), flags, note)
+    return {"plan": w, "width": width, "cpi": cpi, "points": {str(L): v for L, v in pts.items()}}, [row_]
+
+
+REPL_CLOSE = 0.15  # misses per period between the best fit and the next: ambiguous below
+REPL_NO_FIT = 0.5  # misses per period: no policy fits above
+
+
+def run_repl(r, args):
+    """P3.2-repl: repl_chain_source. Cyclic chains of N lines in one L1i set give the ways W, then periodic
+    visit sequences chosen for W (analysis/replacement.py), each after a reset chain, are fitted per
+    policy as (visits + 1) x hit + misses x miss cycles; the best fit names the policy."""
+    p, line = plan(r)["repl"], native.l1i_line(args)
+    b = r.compile(repl_chain_source(r.counter), "fe_repl")
+
+    def lap_cycles(seqs, label, extra=()):
+        argv = [p["work"], p["reps"], p["stride"], line, *extra, *(".".join(map(str, s)) for s in seqs)]
+        out, ratio = r.launch(b, argv, label=label)
+        got = parse_points(out)
+        if sorted(got, key=int) != [str(i) for i in range(len(seqs))]:
+            raise RuntimeError(f"fe_repl: expected {len(seqs)} sequences, got:\n{out[-1500:]}")
+        return [[t / ratio for t in got[str(i)]] for i in range(len(seqs))], bool(r.attempts[-1]["accepted"])
+
+    chains = [random.Random(n).sample(range(n), n) for n in p["ns"]]
+    reps, ok = lap_cycles(chains, "fe_repl_ways")
+    cpu = {n: [c / (n + 1) for c in rs] for n, rs in zip(p["ns"], reps)}
+    ways, res = ways_knee(p["ns"], cpu)
+    raw = {"plan": p, "line": line, "ways": {"cpu": cpu, "knee": ways, "search": plain(res), "accepted": ok}}
+    wflags = search_flags(res) + ([] if ok else unaccepted([[{"accepted": False}]]))
+    summary = [row("frontend.l1i.ways[repl]", ways, None, "lines", published("frontend.l1i", "ways"), wflags,
+                   f"cyclic chains of 2..{max(p['ns'])} lines {p['stride'] >> 10} KiB apart")]  # fmt: skip
+    if ways is None or ways + 2 > line // 4:
+        summary.append(row("frontend.l1i.replacement", None, None, "misses/period", (None, ""), ["no ways"]))
+        return raw, summary
+    seqs, settled = sequences(ways)
+    # two all-hit anchors pin the hit cost, cyclic chains past the ways the miss cost
+    runs = [
+        list(range(2)),
+        list(range(ways)),
+        *(list(range(n)) for n in range(ways + 1, min(ways + 5, 17))),
+        *seqs,
+    ]
+    extra = ["r=" + ".".join(map(str, reset(ways)))]
+    launches = [lap_cycles(runs, f"fe_repl_{i}", extra) for i in range(p["launches"])]
+    y = np.array([statistics.median(statistics.median(x[0][i]) for x in launches) for i in range(len(runs))])
+    # a lopsided tree-PLRU thrashes on fewer lines than it has ways, so the cyclic reading can be low:
+    # fit the ways with the policy, from that reading up
+    fits = {}
+    for w in range(ways, min(ways + 3, line // 4)):
+        for q in policies(w):
+            X = np.column_stack([[len(s) + 1 for s in runs], [misses(q, w, s) for s in runs]])
+            (h, d), *_ = np.linalg.lstsq(X, y, rcond=None)
+            rms = float(np.sqrt(np.mean((X @ [h, d] - y) ** 2)) / d) if d > 0 else float("inf")
+            fits[q, w] = {"rms": rms, "hit": float(h), "miss": float(d)}
+    best, nxt = sorted(fits, key=lambda k: fits[k]["rms"])[:2]
+    flags = [f"repl.{best[0]}"] + ([] if settled else ["repl.unsettled"])
+    flags += ["repl.ambiguous"] if fits[nxt]["rms"] - fits[best]["rms"] < REPL_CLOSE else []
+    flags += ["repl.no_fit"] if fits[best]["rms"] > REPL_NO_FIT else []
+    flags += ["repl.ways_above"] if best[1] > ways else []
+    flags += unaccepted([[{"accepted": a} for _, a in launches]])
+    f = fits[best]
+    per = {
+        q: min(v["rms"] for (q2, _), v in fits.items() if q2 == q) for q in dict.fromkeys(q for q, _ in fits)
+    }
+    note = "rms misses per period: " + ", ".join(f"{q} {v:.2f}" for q, v in per.items())
+    note += f"; {best[1]} ways (cyclic chains read {ways}); hit {f['hit']:.2f}, miss {f['miss']:.1f} cycles"
+    summary.append(
+        row("frontend.l1i.replacement", round(f["rms"], 3), None, "misses/period", (None, ""), flags, note)
+    )
+    raw.update(
+        seqs=runs,
+        settled=settled,
+        reset=extra[0],
+        laps=[x[0] for x in launches],
+        cycles=y.tolist(),
+        fits={f"{q}@{w}": v for (q, w), v in fits.items()},
+    )
+    return raw, summary
+
+
 def placement(r, res, laps_for, seeds, reps):
     """Re-measure the plateau and the bracket ends with other chain orders (gem5 fe_btb.py's check)."""
     lo, hi = res["bracket"]
@@ -571,10 +679,21 @@ POCS = {
     "P3.1-page": run_page,
     "P3.2": run_l1i,
     "P3.2-ways": run_ways,
+    "P3.2-repl": run_repl,
     "P3.3": run_btb,
+    "P3.10": run_lb,
     "P3.7": run_mispredict,
 }
-EST_MIN = {"P3.1": 1, "P3.1-page": 2, "P3.2": 2, "P3.2-ways": 2, "P3.3": 6, "P3.7": 1}
+EST_MIN = {
+    "P3.1": 1,
+    "P3.1-page": 2,
+    "P3.2": 2,
+    "P3.2-ways": 2,
+    "P3.2-repl": 2,
+    "P3.3": 6,
+    "P3.7": 1,
+    "P3.10": 1,
+}
 
 
 def fmt(row):

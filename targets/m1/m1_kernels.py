@@ -54,7 +54,7 @@ def main(argv=None):
             print(f"{f} {poc}: wrote {r.save(m.FAMILY, poc, raw, summary)}")
             for row in summary:
                 print(f"  {row['structure']}: {row['value']} {row.get('unit', '')} ci {row.get('ci')}"
-                      f"  published {row.get('published')}")  # fmt: skip
+                      f"  published {row.get('published')}  {' '.join(row.get('flags', []))}")  # fmt: skip
     if not a.gem5_smoke:
         print("wrote", native.pack(a.tag))
 

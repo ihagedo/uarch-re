@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 import m1_fe  # noqa: E402
 import m1_kernels  # noqa: E402
 from tests.test_m1_mem import apple_stubs  # noqa: E402
+from uarchre.analysis import replacement  # noqa: E402
 from uarchre.kernels.frontend import FEKernel, stride_chain_source  # noqa: E402
 
 GHZ = 3.2
@@ -64,9 +65,15 @@ def set_misses(n, stride, l1i, frames=None):
     return sum(m for m in sets.values() if m > l1i["ways"])
 
 
+LOOP_BUFFER = {"capacity": 0}  # instructions a loop buffer replays across iterations at 8 a cycle
+
+
 def model(name, laps, fetch="8"):
     """Core cycles of one rep: 8-wide fetch, 3072 x 64 B L1i (12-way), L0 BTB 1024 (4-way) with no
     bubble, 2 bubbles from the L1i, 13-cycle mispredicts."""
+    if m := re.match(r"fe_lb_mix_L(\d+)$", name):
+        L = int(m.group(1))
+        return laps * (0.13 + (L / 8 if L <= LOOP_BUFFER["capacity"] else math.ceil(L / 8)))
     if m := re.match(r"fe_width(?:_mix)?_L(\d+)$", name):
         return laps * max(1, math.ceil(int(m.group(1)) / 8))
     if m := re.match(r"fe_page_L(\d+)_o(\d+)$", name):
@@ -83,9 +90,9 @@ def model(name, laps, fetch="8"):
 class FakeRunner:
     """native.Runner's interface over `model`: quantized 24 MHz ticks, rep noise, a slow cold rep 0."""
 
-    def __init__(self, smoke=False, noise=2e-4, reject_every=0, fetch="8", l1i=M1_L1I):
+    def __init__(self, smoke=False, noise=2e-4, reject_every=0, fetch="8", l1i=M1_L1I, repl=("lru", 6)):
         self.smoke, self.noise, self.reject_every = smoke, noise, reject_every
-        self.fetch, self.l1i = fetch, l1i
+        self.fetch, self.l1i, self.repl = fetch, l1i, repl
         self.counter = "pmccntr" if smoke else "cntvct"
         self.attempts, self.rng, self.saved = [], random.Random(0), {}
 
@@ -107,8 +114,23 @@ class FakeRunner:
                 lines.append(f"pt {n} rep {r} cyc {cpj * RATIO * (1 + self.rng.gauss(0, self.noise)):.4f}")
         return "\n".join(lines) + "\n"
 
+    def repl_laps(self, argv):
+        """repl_chain_source's output for self.repl = (policy, ways): 1 cycle a visit, 13 a miss."""
+        policy, ways = self.repl
+        work, reps, stride, line, *seqs = argv
+        lines = ["counter_hz 24576000.0"]
+        for i, s in enumerate(x for x in seqs if not x.startswith("r=")):
+            seq = [int(t) for t in s.split(".")]
+            cyc = len(seq) + 1 + 13 * replacement.misses(policy, ways, seq)
+            for r in range(int(reps)):
+                lines.append(f"pt {i} rep {r} cyc {cyc * RATIO * (1 + self.rng.gauss(0, self.noise)):.4f}")
+        return "\n".join(lines) + "\n"
+
     def launch(self, binpath, argv=(), timeout=1800, label=""):
         bad = self.reject_every and len(self.attempts) % self.reject_every == self.reject_every - 1
+        if binpath == "fe_repl":
+            self.attempts.append({"label": label, "accepted": not bad})
+            return self.repl_laps([str(a) for a in argv]), RATIO
         if binpath == "fe_ways":
             self.attempts.append({"label": label, "accepted": not bad})
             return self.ways(argv), RATIO
@@ -316,6 +338,47 @@ class TestOnModel(unittest.TestCase):
             self.assertTrue(6 <= lo < hi <= 12, (s, lo, hi))  # the knee moves between launches
         src = r.last_src
         self.assertLess(src.index("code[b] = 0"), src.index("/* b t */"))  # pages touched in address order
+
+    def test_loop_buffer(self):
+        for cap, want, ci in ((0, None, None), (24, 20, [20, 27]), (48, 44, [44, 51]), (96, 92, [92, 99])):
+            with mock.patch.dict(LOOP_BUFFER, {"capacity": cap}):
+                (got,) = run(m1_fe.run_lb)[1]
+            self.assertEqual((got["value"], got["ci"]), (want, ci), cap)
+            self.assertIn("lb.absent" if not cap else "lb.present", got["flags"])
+        p = m1_fe.M1["lb"]
+        self.assertEqual({L % 8 for L in p["Ls"]}, {4})  # half a cycle an iteration from a buffer
+        self.assertGreaterEqual(max(p["Ls"]), 2 * 96)  # twice the 2012 patent's 16 x 6 slots
+        self.assertGreaterEqual(p["laps"] * min(p["Ls"]) / 8 / (GHZ * 1e9), 1e-3)
+
+    @mock.patch.object(m1_fe, "sequences", lambda ways: replacement.sequences(ways, n=150))
+    def test_repl_names_each_policy(self):
+        for policy in replacement.POLICIES:
+            got = rows(run(m1_fe.run_repl, FakeRunner(repl=(policy, 4)))[1])
+            self.assertEqual(got["frontend.l1i.ways[repl]"]["value"], 4, policy)
+            flags = got["frontend.l1i.replacement"]["flags"]
+            self.assertIn(f"repl.{'tree' if policy == 'tree-heap' else policy}", flags)  # one tree at 4 ways
+            self.assertNotIn("repl.no_fit", flags, policy)
+            self.assertIn(
+                "4 ways (cyclic chains read 4); hit 1.00, miss 13.0 cycles",
+                got["frontend.l1i.replacement"]["note"],
+            )
+
+    @mock.patch.object(m1_fe, "sequences", lambda ways: replacement.sequences(ways, n=150))
+    def test_repl_lopsided_tree(self):
+        """A 6-way heap-layout tree thrashes on 6 lines once full: the chains read 5, the fit puts it at 6."""
+        got = rows(run(m1_fe.run_repl, FakeRunner(repl=("tree-heap", 6)))[1])
+        self.assertEqual(got["frontend.l1i.ways[repl]"]["value"], 5)
+        flags = got["frontend.l1i.replacement"]["flags"]
+        self.assertTrue({"repl.tree-heap", "repl.ways_above"} <= set(flags), flags)
+        self.assertIn("6 ways (cyclic chains read 5)", got["frontend.l1i.replacement"]["note"])
+
+    def test_repl_design(self):
+        p = m1_fe.M1["repl"]
+        self.assertEqual(p["stride"] % (32 << 10), 0)  # one set at 6 ways (32 KiB a way) or 12 (16 KiB)
+        self.assertLessEqual(max(p["ns"]), LINE // 4)  # a visit per word of a line
+        self.assertGreaterEqual(max(p["ns"]), 12 + 2)
+        self.assertLessEqual(max(p["ns"]) * p["stride"], 2 << 20)
+        self.assertIn('"r=", 2', m1_fe.repl_chain_source("cntvct"))
 
     def test_ways_btb_rise_is_not_a_knee(self):
         """No L1i conflict up to 24 lines, only BTB misses past 15: no ways reading."""
