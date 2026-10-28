@@ -247,7 +247,8 @@ CAPS = {"add": 100, "mul": 30, "fp": 70, "fadd": 70, "load": 50, "store": 40}
 RATIO = 7.68  # 24 MHz x 1024 ticks per 3.2 GHz cycle
 
 
-DISPATCH_Q = {"add": (6, 100), "mul": (2, 40), "fabs": (4, 12), "fcmp": (1, 14)}  # (rate, buffer)
+DISPATCH_Q = {"add": (6, 100), "mul": (2, 40), "fabs": (4, 44 / 3), "fcmp": (1, 44 / 3)}  # (rate, buffer)
+REFILL = {"add": 0, "mul": 0, "fabs": 2 / 3, "fcmp": 2 / 3}  # t0: one FP buffer of 14.7 reads 12 and 14
 MOV_ALU = {"nop": 0, "int": 8, "movimm": 6}  # fillers per 8 on an ALU
 
 
@@ -255,7 +256,9 @@ def model(p):
     """Cycles per iteration of a kernel on a toy core with the CAPS queues (mul shares add's)."""
     if "sat" in p:
         rate, q = DISPATCH_Q[p["x"]]
-        return max(p["sat"] / rate, (p["sat"] - q) / rate + p["m"] / 8) + 3
+        if p["m"] == 0:
+            return p["sat"] / rate + 3
+        return max(p["sat"] / rate, (p["sat"] - q) / rate + REFILL[p["x"]] + p["m"] / 8) + 3
     if "mix" in p:
         alu = p["adds"] + MOV_ALU[p["mix"]] * p["fill"] / 8
         return p["k"] * max(alu / 6, (p["adds"] + p["fill"]) / 8) + 5
@@ -336,23 +339,51 @@ class TestAnalysis(unittest.TestCase):
         self.assertAlmostEqual(got["dispatch.add"]["value"], 100, delta=3)
         self.assertAlmostEqual(got["dispatch.mul"]["value"], 40, delta=3)
         self.assertEqual(got["dispatch.add"]["published"], 24)
-        self.assertIn("t0 = 0 applied", got["dispatch.add"]["note"])
+        self.assertIn("less 6.00 x the refill t0", got["dispatch.add"]["note"])
         for x, q in HANDLEY_FP.items():
             row = got[f"dispatch.{x}"]
             self.assertAlmostEqual(row["value"], q, delta=0.6, msg=x)
             self.assertIsNone(row["published"])
             self.assertEqual(row["flags"], [])
-        gap = got["dispatch.fcmp-fabs"]
-        self.assertAlmostEqual(gap["value"], 2, delta=0.6)
-        self.assertLessEqual(gap["ci"][0], gap["value"])
-        self.assertGreaterEqual(gap["ci"][1], gap["value"])
-        self.assertIn("Handley 14 - 12 = 2", gap["note"])
+        for name, want, delta in (("dispatch.fp", 44 / 3, 0.6), ("dispatch.t0", 2 / 3, 0.2)):
+            row = got[name]
+            self.assertAlmostEqual(row["value"], want, delta=delta, msg=name)
+            self.assertLessEqual(row["ci"][0], row["value"])
+            self.assertGreaterEqual(row["ci"][1], row["value"])
+            self.assertEqual(row["flags"], [])
+        self.assertIn("Handley's forms read 12 (FABS), 14 (FCMP)", got["dispatch.fp"]["note"])
+        self.assertNotIn("dispatch.fcmp-fabs", got)
 
-    def test_dispatch_fp_one_size(self):
-        with mock.patch.dict(DISPATCH_Q, {"fabs": (4, 14)}):
+    def test_dispatch_fp_refill_outlasts_fabs(self):
+        """A refill longer than the buffer lasts behind four ports: fabs reads below 0, the pair still
+        separates 12 from 14."""
+        for b in (12, 14):
+            with mock.patch.dict(DISPATCH_Q, {"fabs": (4, b), "fcmp": (1, b)}):
+                with mock.patch.dict(REFILL, {"fabs": 4, "fcmp": 4}):
+                    _, rows = ms.run_sched(FakeRunner(), args("--parts", "dispatch"))
+            got = {row["structure"]: row for row in rows}
+            self.assertLess(got["dispatch.fabs"]["value"], 0)
+            self.assertIn("fit.no_free_run", got["dispatch.fabs"]["flags"])
+            self.assertAlmostEqual(got["dispatch.fp"]["value"], b, delta=0.6)
+            self.assertAlmostEqual(got["dispatch.t0"]["value"], 4, delta=0.3)
+            self.assertNotIn("fit.no_free_run", got["dispatch.fp"]["flags"])
+
+    def test_dispatch_fp_two_buffers(self):
+        with mock.patch.dict(DISPATCH_Q, {"fabs": (4, 20), "fcmp": (1, 12)}):
+            with mock.patch.dict(REFILL, {"fabs": 0, "fcmp": 0}):
+                _, rows = ms.run_sched(FakeRunner(), args("--parts", "dispatch"))
+        got = {row["structure"]: row for row in rows}
+        self.assertLess(got["dispatch.t0"]["value"], 0)
+        self.assertIn("fp.not_one_buffer", got["dispatch.fp"]["flags"])
+
+    def test_dispatch_fp_same_rate(self):
+        """fcmp on all four FP ports: the forms give one equation, no reading."""
+        with mock.patch.dict(DISPATCH_Q, {"fcmp": (4, 44 / 3)}):
             _, rows = ms.run_sched(FakeRunner(), args("--parts", "dispatch"))
-        gap = {row["structure"]: row for row in rows}["dispatch.fcmp-fabs"]
-        self.assertAlmostEqual(gap["value"], 0, delta=0.6)
+        got = {row["structure"]: row for row in rows}
+        for name in ("dispatch.fp", "dispatch.t0"):
+            self.assertEqual((got[name]["value"], got[name]["ci"]), (None, None))
+            self.assertIn("fp.same_rate", got[name]["flags"])
 
     def test_movimm_alu_share(self):
         for u in (0, 6, 8):

@@ -367,8 +367,8 @@ def pairing(r, cfg):
 
 DISPATCH_DB = {"add": "int", "mul": "mul", "fp": None}
 DISPATCH_NOTE = {
-    "fabs": "no FP buffer in firestorm.yaml; readings to compare: Handley 12 (FABS), 14 (FCMP)",
-    "fcmp": "one FP port, writes flags; reading to compare: Handley 14",
+    "fabs": "four FP ports; Handley's FABS form read 12",
+    "fcmp": "one FP port, writes flags; Handley's FCMP form read 14",
 }
 
 
@@ -397,13 +397,19 @@ def dispatch(r, cfg):
                 reps.setdefault(m, []).append(v)
             recs.extend(rs)
         y = np.array([statistics.median(reps[m]) for m in ms])
-        f, base, slope = hinge(np.asarray(ms, float), y)
+        mx = np.asarray(ms, float)
+        corner = hinge(mx, y)[0]
+        tail = mx >= min(max(2 * corner, mx.max() / 3), mx[-3])
+        slope, a = (float(c) for c in np.polyfit(mx[tail], y[tail], 1))
+        base = float(y[ms.index(0)])  # the block alone
+        # the tail line meets M = 0 at the block's time plus the refill the nops expose, so base - a
+        # is the buffer's drain time less t0, below 0 when the refill outlasts the buffer
         fit = {"x": x, "S": s, "ms": ms, "values": y.tolist(), "reps": reps, "launches": recs}
         fit.update(
-            free=f, base=base, slope=slope, rate_x=s / base, t_free=f * slope, q_raw=f * slope * s / base
+            corner=corner, free=(base - a) / slope, base=base, intercept=a, slope=slope, t_free=base - a
         )
         fit["rate_y"] = 1 / slope if slope > 0 else None
-        log(f"P1.5 dispatch {x} S={s}: free {f:.0f} nops, {s / base:.2f} {x}/cycle -> {fit['q_raw']:.1f}")
+        log(f"P1.5 dispatch {x} S={s}: free {fit['free']:.0f} nops, {base - a:.2f} cycles")
         return fit
 
     fits = pmap(one, jobs, cfg["jobs"])
@@ -411,18 +417,20 @@ def dispatch(r, cfg):
     for x in cfg["dispatch"]:
         ms = grid(x)
         fx = [f for f in fits if f["x"] == x]
+        rate = drain_rate(fx)
+        for f in fx:
+            f.update(rate_x=rate, q_raw=rate * f["t_free"])
         q = [f["q_raw"] for f in fx]
         db = DISPATCH_DB.get(x)
         node = native.published(f"decoupling.dispatch_buffers.{db}") if db else None
         flags = clock_flags({"launches": [rec for f in fx for rec in f["launches"]]})
-        if any(f["free"] >= 0.9 * (max(ms) - 16) for f in fx):
+        if any(f["corner"] >= 0.9 * (max(ms) - 16) for f in fx):
             flags.append("fit.no_hinge")
         if any(f["free"] < 8 for f in fx):
             flags.append("fit.no_free_run")
-        rate = statistics.mean(f["rate_x"] for f in fx)
         note = (
-            f"free nops x {rate:.2f} {x}/cycle behind S = {[f['S'] for f in fx]} (range over S); "
-            f"t0 = 0 applied (pipeline refill, uncalibrated on M1); counts each {x} queued after rename"
+            f"cycles of free nops x {rate:.2f} {x}/cycle behind S = {[f['S'] for f in fx]} (range over S); "
+            f"counts each {x} queued after rename, less {rate:.2f} x the refill t0"
         )
         row_flags[x] = flags
         rows.append(
@@ -439,27 +447,52 @@ def dispatch(r, cfg):
         )
         raw[x] = fx
     if "fabs" in raw and "fcmp" in raw:
-        rows.append(
-            dispatch_gap(raw["fabs"], raw["fcmp"], sorted(set(row_flags["fabs"] + row_flags["fcmp"])))
-        )
+        rows += dispatch_fp(raw["fabs"], raw["fcmp"], row_flags["fabs"] + row_flags["fcmp"])
     return rows, raw
 
 
-def dispatch_gap(fa, fc, flags):
-    """fcmp minus fabs reading, interval over the S pairs."""
-    qa, qc = [f["q_raw"] for f in fa], [f["q_raw"] for f in fc]
-    ra, rc = (statistics.mean(f["rate_x"] for f in fs) for fs in (fa, fc))
-    return {
-        "structure": "dispatch.fcmp-fabs",
-        "value": float(np.mean(qc) - np.mean(qa)),
-        "ci": [float(min(qc) - max(qa)), float(max(qc) - min(qa))],
-        "unit": "entries",
-        "published": None,
-        "source": "",
-        "flags": flags,
-        "note": f"Handley 14 - 12 = 2; 0: one size for both fillers; a refill offset t0 adds "
-        f"({rc:.1f} - {ra:.1f}) x t0",
-    }
+def drain_rate(fx):
+    """x per cycle from the block time's slope over S, which a fixed cost per iteration does not move."""
+    ss, bs = [f["S"] for f in fx], [f["base"] for f in fx]
+    k = np.polyfit(ss, bs, 1)[0] if len(set(ss)) > 1 else 0
+    return float(1 / k) if k > 0 else statistics.mean(s / b for s, b in zip(ss, bs))
+
+
+def dispatch_fp(fa, fc, flags):
+    """The one FP buffer B and the refill t0 from both forms, each reading B - rate x t0; interval
+    over the S pairs."""
+    pairs = [(a["rate_x"], a["q_raw"], c["rate_x"], c["q_raw"]) for a in fa for c in fc]
+    flags = sorted(set(flags) - {"fit.no_free_run"})  # the solve needs no free run
+    if any(ra < 1.5 * rc for ra, _, rc, _ in pairs):  # fcmp on as many ports as fabs: nothing to solve
+        b = t0 = None
+        flags.append("fp.same_rate")
+    else:
+        b = [(ra * qc - rc * qa) / (ra - rc) for ra, qa, rc, qc in pairs]
+        t0 = [(qc - qa) / (ra - rc) for ra, qa, rc, qc in pairs]
+        if np.mean(t0) < 0:
+            flags.append("fp.not_one_buffer")  # fabs reads more than fcmp: no common buffer and refill
+    note = "fabs and fcmp forms solved together, one FP buffer (Handley)"
+    return [
+        {
+            "structure": name,
+            "value": float(np.mean(v)) if v else None,
+            "ci": [float(min(v)), float(max(v))] if v else None,
+            "unit": unit,
+            "published": None,
+            "source": "",
+            "flags": flags,
+            "note": f"{note}; {extra}",
+        }
+        for name, v, unit, extra in (
+            (
+                "dispatch.fp",
+                b,
+                "entries",
+                "no FP buffer in firestorm.yaml; Handley's forms read 12 (FABS), 14 (FCMP)",
+            ),
+            ("dispatch.t0", t0, "cycles", "refill after the nops, rename to issue"),
+        )
+    ]
 
 
 def run_sched(r, args):
