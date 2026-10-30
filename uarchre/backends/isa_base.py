@@ -72,7 +72,7 @@ int main(int argc, char **argv) {{
     uint64_t scratch[16] = {{0}};
     double *cpi = malloc(reps * sizeof(double));
     double best = 1e30;
-    if (probe_adds) printf("clock_ratio_pre %.4f\n", clock_ratio(probe_adds));
+    if (probe_adds) printf("clock_ratio_pre {ratio_fmt}\n", clock_ratio(probe_adds));
     /* the chase continues across reps: restarting at p0/p1 would hit lines the
        previous rep cached. run_args() refuses a chain that reps*iters*depth wraps. */
     void *a = p0, *b = p1;
@@ -93,7 +93,7 @@ int main(int argc, char **argv) {{
     }}
     /* printed after the loop so the reps run back to back */
     for (int r = 0; r < reps; r++) printf("rep %d cycles_per_iter %.3f\n", r, cpi[r]);
-    if (probe_adds) printf("clock_ratio_post %.4f\n", clock_ratio(probe_adds));
+    if (probe_adds) printf("clock_ratio_post {ratio_fmt}\n", clock_ratio(probe_adds));
     printf("cycles_per_iter %.3f\n", best);   /* minimum over reps, for old readers */
     return 0;
 }}
@@ -109,6 +109,7 @@ class Emitter:
     default_probe_adds = 1 << 20
     cycle_counter_c = ""
     clobbers: list = []
+    ratio_fmt = "%.4f"  # clock-probe ticks per add
 
     # operand names inside the asm block: %0 = chain a, %1 = chain b,
     # %2 = loop counter, %3 = scratch buffer address
@@ -168,6 +169,7 @@ def emit_c(k: Kernel, em: Emitter, **overrides) -> str:
         probe_body=_asm(["1:"] + [em.probe_add()] * 64 + list(em.probe_tail())),
         asm_body=_asm(em.lower(k)),
         clobbers=clob,
+        ratio_fmt=em.ratio_fmt,
     )
 
 

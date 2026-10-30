@@ -95,6 +95,7 @@ class AArch64(Emitter):
     name = "aarch64"
     line = 128
     default_bytes = 256 << 20
+    ratio_fmt = "%.8f"  # ~0.0075 ticks per add on a 24 MHz counter: %.4f keeps two digits
     clobbers = (
         ["x6", "x7", "x8"] + INT_ROT + ["x19", "x20"] + [f"v{i}" for i in range(16, 26)] + ["v30", "v31"]
     )
