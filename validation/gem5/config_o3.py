@@ -1,6 +1,6 @@
 """Minimal gem5 SE-mode O3 config (RISC-V or ARM) with overridable structures.
 
-  gem5.opt config_o3.py [--isa riscv|arm] --cmd ./kernel [--args "bytes iters reps"] \
+  gem5.opt config_o3.py [--isa riscv|arm|x86] --cmd ./kernel [--args "bytes iters reps"] \
       --numROBEntries 128 --LQEntries 32 --set cpu.branchPred.ras.numEntries=16
 
 `--<O3 param>` sets a CPU param; `--set path=value` sets any param below `system` (int,
@@ -46,7 +46,7 @@ O3_PARAMS = [
 ]
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--isa", choices=["riscv", "arm"], default="riscv")
+ap.add_argument("--isa", choices=["riscv", "arm", "x86"], default="riscv")
 ap.add_argument("--cmd", required=True)
 ap.add_argument("--args", default="")
 ap.add_argument("--set", action="append", default=[], metavar="PATH=VALUE")
@@ -100,7 +100,7 @@ system.mem_ranges = [AddrRange("1GB")]
 
 # by name: a single-ISA build has only its own CPU class (ARM runs go through
 # arm_config_o3.py, which also attaches the PMU the cycle counter reads)
-cpu = getattr(m5.objects, {"riscv": "RiscvO3CPU", "arm": "ArmO3CPU"}[args.isa])()
+cpu = getattr(m5.objects, {"riscv": "RiscvO3CPU", "arm": "ArmO3CPU", "x86": "X86O3CPU"}[args.isa])()
 # wide pipeline so structure sizes are the only limit
 for w in [
     "fetchWidth",
@@ -114,6 +114,13 @@ for w in [
 ]:
     setattr(cpu, w, 8)
 cpu.instQueues = [IQUnit(numEntries=args.numIQEntries)]
+if args.isa == "x86":  # sqrtsd issues as SimdFloatSqrt, 1 cycle in the default pool: give it FloatSqrt's
+    pool = m5.objects.DefaultFUPool()
+    for fu in pool.FUList:
+        for op in fu.opList:
+            if str(op.opClass) == "SimdFloatSqrt":
+                op.opLat, op.pipelined = 24, False
+    cpu.instQueues[0].fuPool = pool
 cpu.numPhysVecRegs = 256
 for p in O3_PARAMS:
     v = getattr(args, p)
@@ -133,6 +140,10 @@ system.l2.cpu_side = system.l2bus.mem_side_ports
 system.membus = SystemXBar()
 system.l2.mem_side = system.membus.cpu_side_ports
 cpu.createInterruptController()
+if args.isa == "x86":  # the local APIC's ports, as gem5's SE example wires them
+    cpu.interrupts[0].pio = system.membus.mem_side_ports
+    cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
+    cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
 system.mem_ctrl = MemCtrl()

@@ -23,16 +23,22 @@ GEM5_SRC = os.path.join(ROOT, "validation", "gem5", "gem5-src")
 GEM5 = {
     "riscv64": os.environ.get("GEM5", os.path.join(GEM5_SRC, "build", "RISCV", "gem5.opt")),
     "aarch64": os.environ.get("GEM5_ARM", os.path.join(GEM5_SRC, "build", "ARM", "gem5.opt")),
+    "x86_64-sse": os.environ.get("GEM5_X86", os.path.join(GEM5_SRC, "build", "X86", "gem5.opt")),
 }
 CONFIG = os.path.join(ROOT, "validation", "gem5", "config_o3.py")
 # ARM SE mode has no generic timer: arm_config_o3.py adds the PMU that PMCCNTR_EL0 needs
-CONFIGS = {"riscv64": CONFIG, "aarch64": os.path.join(ROOT, "validation", "gem5", "arm_config_o3.py")}
+CONFIGS = {
+    "riscv64": CONFIG,
+    "aarch64": os.path.join(ROOT, "validation", "gem5", "arm_config_o3.py"),
+    "x86_64-sse": CONFIG,
+}
 TOOLCHAIN = {  # cross compiler, flags; static binaries only
     "riscv64": ("riscv64-linux-gnu-gcc", ("-O1", "-march=rv64gc", "-mabi=lp64d")),
     "aarch64": ("aarch64-linux-gnu-gcc", ("-O1", "-march=armv8-a")),
+    "x86_64-sse": ("gcc", ("-O1", "-mno-avx")),  # gem5 decodes no VEX prefix
 }
 CROSS, CFLAGS = TOOLCHAIN["riscv64"]
-GEM5_ISA = {"riscv64": "riscv", "aarch64": "arm"}
+GEM5_ISA = {"riscv64": "riscv", "aarch64": "arm", "x86_64-sse": "x86"}
 
 SLOTS = int(os.environ.get("UARCHRE_GEM5_SLOTS", "16"))
 CPUS = os.environ.get("UARCHRE_GEM5_CPUS", "4-19")
@@ -61,10 +67,20 @@ ARM_DEFAULTS = {
     "SQEntries": 32,
 }
 ARM_ARCH = {"int": 42, "vec": 44, "cc": 6}
+X86_ARCH_INT = 38  # gem5 x86 renames 16 GPRs, 16 microcode temporaries and 6 implicit registers
 CC_PER_FLAGS_OP = 3
 
 
 def gem5_truth(params, isa="riscv64"):
+    if isa == "x86_64-sse":
+        p = {**ARM_DEFAULTS, **params}
+        return {
+            "rob": p["numROBEntries"],
+            "int_prf_headroom": p["numPhysIntRegs"] - X86_ARCH_INT,
+            "lq": p["LQEntries"],
+            "sq": p["SQEntries"],
+            "int_prf": p["numPhysIntRegs"],
+        }
     if isa == "aarch64":
         p = {**ARM_DEFAULTS, **params}
         cc = p.get("numPhysCCRegs", 5 * p["numPhysIntRegs"])

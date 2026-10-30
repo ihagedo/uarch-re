@@ -10,10 +10,10 @@ import hashlib
 import threading
 
 from ..isa_base import emit_c, run_args, parse_output
-from ..isa.x86_64 import X86_64
+from ..isa.x86_64 import X86_64, X86_64SSE
 from ..isa.riscv64 import RISCV64
 
-EMITTERS = {"x86_64": X86_64(), "riscv64": RISCV64()}
+EMITTERS = {"x86_64": X86_64(), "x86_64-sse": X86_64SSE(), "riscv64": RISCV64()}
 try:  # isa/aarch64.py is optional
     from ..isa.aarch64 import AArch64
 

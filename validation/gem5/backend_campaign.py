@@ -6,6 +6,7 @@ the script resumes. Structures not under test are set large (BIG). ALU-delay run
 dependent fsqrt.d (~290 cycles per group) and a 1 MB chain, since nothing is chased.
 
   validation/gem5/backend_campaign.py [--only p12] [--list]
+  validation/gem5/backend_campaign.py --isa x86_64-sse     # x86 O3 at the x86 host's conditions
 """
 
 import argparse
@@ -66,7 +67,25 @@ def campaign():
     return c
 
 
-def run(s, jobs):
+def campaign_x86():
+    """The x86 host runs' conditions (miss delay at depth 1 and 2, 32 sqrtsd links) on gem5 x86 O3, with
+    the SSE probe: offsets for the native x86 readings. Truth for int = physical - 38 (x86 renames 38)."""
+    c = []
+    for r in [96, 160, 256]:
+        for d in (1, 2):
+            c.append(sweep(f"x86-rob{r}-d{d}", {**BIG, "numROBEntries": r}, "nop", rng(r, 8), d))
+        c.append(sweep(f"x86-rob{r}-fp32", {**BIG, "numROBEntries": r}, "nop", rng(r, 8), 32, "fp"))
+    for q in [24, 48, 64]:
+        for delay, depth in [("miss", 1), ("miss", 2), ("fp", 32)]:
+            tag = f"-d{depth}" if delay == "miss" else "-fp32"
+            c.append(sweep(f"x86-lq{q}{tag}", {**BIG, "LQEntries": q}, "load", rng(q, 4), depth, delay))
+            c.append(sweep(f"x86-sq{q}{tag}", {**BIG, "SQEntries": q}, "store", rng(q, 4), depth, delay))
+    for h in [64, 96, 128]:
+        c.append(sweep(f"x86-int{h}-d1", {**BIG, "numPhysIntRegs": 38 + h}, "int", rng(h, 8)))
+    return c
+
+
+def run(s, jobs, isa=None):
     out = os.path.join(ROOT, "results", "gem5", s["tag"])
     if os.path.exists(os.path.join(out, "knees.json")):
         return s["tag"], "skip"
@@ -96,7 +115,7 @@ def run(s, jobs):
         "--jobs",
         str(jobs),
         "--no-plot",
-    ]
+    ] + (["--isa", isa] if isa else [])
     with open(os.path.join(LOG, s["tag"] + ".log"), "w") as fh:
         r = subprocess.run(cmd, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT)
     return s["tag"], f"exit {r.returncode}"
@@ -108,15 +127,16 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--parallel", type=int, default=10, help="sweeps at once")
     ap.add_argument("--jobs", type=int, default=4, help="gem5 launches per sweep at once")
+    ap.add_argument("--isa", default=None, help="x86_64-sse: the x86 campaign")
     args = ap.parse_args()
-    todo = [s for s in campaign() if s["tag"].startswith(args.only)]
+    todo = [s for s in (campaign_x86() if args.isa else campaign()) if s["tag"].startswith(args.only)]
     if args.list:
         for s in todo:
             print(s)
         return
     os.makedirs(LOG, exist_ok=True)
     with ThreadPoolExecutor(args.parallel) as ex:
-        for tag, status in ex.map(lambda s: run(s, args.jobs), todo):
+        for tag, status in ex.map(lambda s: run(s, args.jobs, args.isa), todo):
             print(f"{tag:24s} {status}", flush=True)
 
 

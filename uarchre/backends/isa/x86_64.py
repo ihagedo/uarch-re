@@ -100,3 +100,23 @@ static inline uint64_t cycles(void) {
         if op == Op.DELAY_FP:
             return f"sqrtsd %%xmm{8 + chain}, %%xmm{8 + chain}"
         return f"imulq %%r8, {['%%rcx', '%%rdx'][chain]}"
+
+
+class X86_64SSE(X86_64):
+    """X86_64 without AVX, for gem5, which decodes no VEX prefix: SSE2 setup, and the fp filler a movq
+    from a GPR (a whole xmm register written, no merge)."""
+
+    name = "x86_64-sse"
+
+    def loop_head(self):
+        head = super().loop_head()
+        sse = {"vxorpd %%xmm14, %%xmm14, %%xmm14": "xorpd %%xmm14, %%xmm14",
+               "vxorpd %%xmm15, %%xmm15, %%xmm15": "xorpd %%xmm15, %%xmm15",
+               "vcvtsi2sd %%r9, %%xmm8, %%xmm8": "cvtsi2sd %%r9, %%xmm8",
+               "vcvtsi2sd %%r9, %%xmm9, %%xmm9": "cvtsi2sd %%r9, %%xmm9"}  # fmt: skip
+        return [sse.get(line, line) for line in head]
+
+    def filler(self, op, idx):
+        if op == Op.FP:
+            return f"movq %%r8, {FP_ROT[idx % 8]}"
+        return super().filler(op, idx)
