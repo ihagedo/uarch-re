@@ -21,7 +21,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import native  # noqa: E402
 
-sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5"))
+sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5", "frontend"))
 from fe_common import capacity_search, geom_grid  # noqa: E402
 from uarchre.kernels.frontend import A64, harness_c, jump_chain, lap_excess, onset, parse_reps  # noqa: E402
 from uarchre.kernels.frontend import lb_loop, page_loop, random_branches, step_period, straight_nops  # noqa: E402

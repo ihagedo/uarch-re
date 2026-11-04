@@ -1349,14 +1349,14 @@ def tlb_baremetal_binary(plist, nloads=1024, reps=3, itlb=False):
 
 
 def run_gem5_fs(elf, sets=(), tag="tlb"):
-    """Run a bare-metal ELF under validation/gem5/mem_fs_config.py, holding
+    """Run a bare-metal ELF under validation/gem5/configs/mem_fs_config.py, holding
     one host-wide gem5 slot. Returns (stdout, outdir)."""
     import hashlib
     import os
     import subprocess
     from ..backends.platform.gem5 import slot, GEM5, CPUS, ROOT
 
-    cfg = os.path.join(ROOT, "validation", "gem5", "mem_fs_config.py")
+    cfg = os.path.join(ROOT, "validation", "gem5", "configs", "mem_fs_config.py")
     tail = [cfg, "--bin", elf] + [x for s in sets for x in ("--set", s)]
     outdir = os.path.join(
         ROOT, "build", "gem5out", f"{tag}_{hashlib.md5(' '.join(tail).encode()).hexdigest()[:10]}"

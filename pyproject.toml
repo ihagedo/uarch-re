@@ -14,4 +14,4 @@ select = ["E", "F", "W", "B", "UP"]
 ignore = ["E402", "E731", "B905"]
 
 [tool.ruff.lint.per-file-ignores]
-"validation/gem5/config_o3.py" = ["F821"]   # gem5 injects m5 names at runtime
+"validation/gem5/configs/config_o3.py" = ["F821"]   # gem5 injects m5 names at runtime

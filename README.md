@@ -98,7 +98,7 @@ python3 -m unittest                # ~150 tests, ~45 s
 ./sweep.py toy --tag t --toy rob=64,int_prf=72,lq=24,sq=16 --n 2:90:2
 ./sweep.py native --tag host --fillers nop,int,fp,load,store --n 16:560:16 --pin-cpu 2
 ./sweep.py gem5 --tag rob128 --gem5 numROBEntries=128 --fillers nop --n 32:200:8 --jobs 12
-validation/gem5/arm_sweep.py --tag arm-rob64 --gem5 numROBEntries=64 --fillers nop --n 40:80:8
+validation/gem5/window/arm_sweep.py --tag arm-rob64 --gem5 numROBEntries=64 --fillers nop --n 40:80:8
 python3 tools/figures.py           # docs/figures/
 ```
 

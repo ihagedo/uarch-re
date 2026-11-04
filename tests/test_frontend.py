@@ -299,7 +299,7 @@ class TestCapacitySearch(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "validation", "gem5"))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "validation", "gem5", "frontend"))
         import fe_common
 
         cls.fc = fe_common

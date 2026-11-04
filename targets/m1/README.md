@@ -71,7 +71,7 @@ tar czf m1-results.tgz results/m1
 ```sh
 python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~57 in all)
 python3 targets/m1/m1_kernels.py run all --tag m1
-python3 targets/m1/m1_kernels.py run fp P3.6     # one family, some PoCs
+python3 targets/m1/m1_kernels.py run pred P3.6   # one family, some PoCs
 ```
 
 Each launch sits between two add-chain clock probes: ticks become core cycles,

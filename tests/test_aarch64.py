@@ -132,7 +132,7 @@ class TestAArch64Emitter(unittest.TestCase):
         import os
         import sys
 
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "validation", "gem5"))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "validation", "gem5", "window"))
         from arm_sweep import arm_truth
 
         t = arm_truth({"numROBEntries": 64})

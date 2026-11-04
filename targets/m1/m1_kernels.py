@@ -2,8 +2,8 @@
 """Run the non-window kernels on Apple silicon, one family or all of them, and pack the results.
 
 python3 targets/m1/m1_kernels.py list
-python3 targets/m1/m1_kernels.py run all [--tag m1]          # or a family: mem fe fp sched
-python3 targets/m1/m1_kernels.py run fp P3.6 P3.4 --tag m1    # some PoCs of one family
+python3 targets/m1/m1_kernels.py run all [--tag m1]          # or a family: mem fe pred sched
+python3 targets/m1/m1_kernels.py run pred P3.6 P3.4 --tag m1  # some PoCs of one family
 python3 targets/m1/m1_kernels.py pack [--tag m1]              # results/m1/<tag>.tgz
 """
 
@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import native  # noqa: E402
 
-FAMILIES = ("mem", "fe", "fp", "sched")
+FAMILIES = ("mem", "fe", "pred", "sched")
 
 
 def family(name):

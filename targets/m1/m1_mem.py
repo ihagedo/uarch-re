@@ -22,7 +22,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import native  # noqa: E402
 
-sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5"))
+sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5", "mem"))
 from uarchre.kernels import memory as M  # noqa: E402
 from uarchre.kernels.memory import plateau_onset  # noqa: E402
 import mem_cache  # noqa: E402

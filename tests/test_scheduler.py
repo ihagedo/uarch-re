@@ -30,7 +30,7 @@ from uarchre.kernels.scheduler import (
 from uarchre.kernels.window import window_probe
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(ROOT, "validation", "gem5"))
+sys.path.insert(0, os.path.join(ROOT, "validation", "gem5", "sched"))
 
 
 class TestSchedProbe(unittest.TestCase):

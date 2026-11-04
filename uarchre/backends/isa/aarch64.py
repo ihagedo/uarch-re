@@ -4,7 +4,7 @@ M1 rules (Handley): the loop head writes every register the loop touches, and NZ
 registers run 4-wide adds, not 6-wide); no adr/adrp (eliminated at rename from A15 on); filler values
 are arbitrary 64-bit patterns and FP sources normal doubles; loads and stores use 8 non-sequential
 addresses; one chain node per 128 B line. x18, x29 and x30 are never touched.
-Counters: `pmccntr` (default; gem5 SE with validation/gem5/arm_config_o3.py; traps at EL0 on Linux
+Counters: `pmccntr` (default; gem5 SE with validation/gem5/configs/arm_config_o3.py; traps at EL0 on Linux
 and macOS), `cntvct` (Linux) and `mach` (macOS). The last two tick at 24 MHz; knees in N do not care.
 """
 
@@ -23,7 +23,7 @@ DLY_A, DLY_B = 0xC2B2AE3D27D4EB4F, 0x9E3779B97F4A7C15
 
 COUNTERS = {
     "pmccntr": r"""
-/* PMCCNTR_EL0: core cycles under gem5 SE with validation/gem5/arm_config_o3.py */
+/* PMCCNTR_EL0: core cycles under gem5 SE with validation/gem5/configs/arm_config_o3.py */
 __attribute__((constructor)) static void uarchre_pmu_on(void) {
     uint64_t c0, c1;
     __asm__ __volatile__("msr pmcr_el0, %0\n\tmsr pmcntenset_el0, %1\n\tisb"
@@ -32,7 +32,7 @@ __attribute__((constructor)) static void uarchre_pmu_on(void) {
     for (volatile int i = 0; i < 64; i++) ;
     __asm__ __volatile__("isb\n\tmrs %0, pmccntr_el0" : "=r"(c1) :: "memory");
     if (c1 == c0) {
-        printf("error: PMCCNTR_EL0 does not count; under gem5 use validation/gem5/arm_config_o3.py "
+        printf("error: PMCCNTR_EL0 does not count; under gem5 use validation/gem5/configs/arm_config_o3.py "
                "(it attaches an ArmPMU)\n");
         exit(2);
     }

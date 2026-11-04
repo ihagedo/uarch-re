@@ -309,7 +309,7 @@ def firestorm(path=FIRESTORM):
 # ---------------------------------------------------------------- gem5 results
 
 GEM5 = os.path.join(ROOT, "results", "gem5")
-GEM5_WIDTH = 8  # O3 default fetch/decode/rename/dispatch/issue width (validation/gem5/config_o3.py)
+GEM5_WIDTH = 8  # O3 default fetch/decode/rename/dispatch/issue width (validation/gem5/configs/config_o3.py)
 
 
 def gem5_runset(name, tags):
@@ -348,7 +348,7 @@ def gem5_rob_cases():
 
 
 def gem5_campaign_cases():
-    """Finished validation/gem5/backend_campaign.py runs (P1.1-P1.3), with a P1.3
+    """Finished validation/gem5/window/backend_campaign.py runs (P1.1-P1.3), with a P1.3
     size's miss and fp12 tags in one RunSet. gem5 allocates the LSQ at dispatch,
     so only offset.uncalibrated / offset.missing may fire."""
     if not os.path.isdir(GEM5):

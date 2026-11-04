@@ -21,7 +21,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import native  # noqa: E402
 
-sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5"))
+sys.path.insert(0, os.path.join(native.ROOT, "validation", "gem5", "sched"))
 from sched_common import hinge, hockey, ols, sharing_verdict, warm, width  # noqa: E402
 from uarchre.analysis.bootstrap import bootstrap_knee  # noqa: E402
 from uarchre.analysis.knee import find_knee  # noqa: E402

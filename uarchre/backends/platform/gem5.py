@@ -25,11 +25,11 @@ GEM5 = {
     "aarch64": os.environ.get("GEM5_ARM", os.path.join(GEM5_SRC, "build", "ARM", "gem5.opt")),
     "x86_64-sse": os.environ.get("GEM5_X86", os.path.join(GEM5_SRC, "build", "X86", "gem5.opt")),
 }
-CONFIG = os.path.join(ROOT, "validation", "gem5", "config_o3.py")
+CONFIG = os.path.join(ROOT, "validation", "gem5", "configs", "config_o3.py")
 # ARM SE mode has no generic timer: arm_config_o3.py adds the PMU that PMCCNTR_EL0 needs
 CONFIGS = {
     "riscv64": CONFIG,
-    "aarch64": os.path.join(ROOT, "validation", "gem5", "arm_config_o3.py"),
+    "aarch64": os.path.join(ROOT, "validation", "gem5", "configs", "arm_config_o3.py"),
     "x86_64-sse": CONFIG,
 }
 TOOLCHAIN = {  # cross compiler, flags; static binaries only
@@ -56,7 +56,7 @@ DEFAULTS = {
 }
 ARCH_INT = 32  # RISC-V x0..x31 (x0 may or may not be pinned; report both)
 ARCH_FP = 32
-# ArmO3CPU (validation/gem5/arm_sweep.py, P0.6): 42 int and 44 vector registers are
+# ArmO3CPU (validation/gem5/window/arm_sweep.py, P0.6): 42 int and 44 vector registers are
 # architectural; scalar FP draws on the vector pool; 6 CC registers, and an AArch64
 # cmp renames three of them (NZ, C, V), so flag-setting ops = (CC - 6) / 3
 ARM_DEFAULTS = {

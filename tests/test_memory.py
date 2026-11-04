@@ -15,7 +15,7 @@ import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "validation", "gem5"))
+sys.path.insert(0, os.path.join(ROOT, "validation", "gem5", "mem"))
 
 from uarchre.kernels import memory as M  # noqa: E402
 
