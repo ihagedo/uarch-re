@@ -6,6 +6,8 @@ predictors) from timing alone. Every method is checked on cores where the
 answer is known (a toy model, gem5, BOOM RTL, x86 with published sizes)
 before it is used on the Apple M1 Firestorm.
 
+M1 run order and what each run should show: [CHECKLIST.md](CHECKLIST.md).
+
 ## The window probe
 
 ```
@@ -65,10 +67,8 @@ LQ entry, so the knees split and the LQ is reported as a bound.
 - BOOM RTL: ROB 4/4 (32-128).
 - gem5 ARM: ROB 14/14 with the AArch64 emitter.
 - x86 (i5-14600): ROB 510 on the P-core and 253 on the E-core, against
-  Intel's 512 and 256. x86 offsets aren't calibrated yet; most x86 sizes
-  read 0-5 entries low.
-- M1: waiting on hardware. The macOS driver (`targets/m1/`) hasn't run on a
-  Mac yet.
+  Intel's 512 and 256. Most other x86 sizes read 0-5 entries low.
+- M1: waiting on hardware. The run order is in `CHECKLIST.md`.
 
 Per-experiment status: [`docs/pocs.md`](docs/pocs.md).
 
@@ -80,7 +80,7 @@ uarchre/backends/   ISA emitters (x86-64, RV64, AArch64) and platforms (native, 
 uarchre/analysis/   knee detection, bootstrap intervals, offsets, anomaly rules
 sweep.py            command-line sweep driver
 spec/               core spec schema and specs (Firestorm, R10000)
-validation/         gem5, BOOM and toy-model campaigns
+validation/         toy model, gem5 (one folder per kernel family), BOOM and SimEng
 targets/            x86 and M1 drivers
 explainer/          JS factory model of the core and a register-renaming lab
 exporters/          spec -> gem5 config
@@ -94,7 +94,7 @@ tests/
 
 ```
 . tools/env.sh                     # cross compilers, gem5 path, scratch checks
-python3 -m unittest                # ~150 tests, ~45 s
+python3 -m unittest                # ~300 tests, a few minutes
 ./sweep.py toy --tag t --toy rob=64,int_prf=72,lq=24,sq=16 --n 2:90:2
 ./sweep.py native --tag host --fillers nop,int,fp,load,store --n 16:560:16 --pin-cpu 2
 ./sweep.py gem5 --tag rob128 --gem5 numROBEntries=128 --fillers nop --n 32:200:8 --jobs 12
@@ -102,5 +102,5 @@ validation/gem5/window/arm_sweep.py --tag arm-rob64 --gem5 numROBEntries=64 --fi
 python3 tools/figures.py           # docs/figures/
 ```
 
-gem5 needs `validation/gem5/build.sh` (`ISA=RISCV` or `ISA=ARM`). `--set`
+gem5 needs `validation/gem5/build.sh` (`ISA=RISCV`, `ARM` or `X86`). `--set`
 overrides any gem5 parameter by dotted path. BOOM: `validation/boom/`.

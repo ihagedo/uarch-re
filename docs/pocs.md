@@ -13,10 +13,10 @@ Pass means within max(2 entries, 2%) of the configured value unless noted.
 | P0.5 | window probe on RTL | BOOM | pass |
 | P0.6 | AArch64 emitter and macOS driver | gem5 ARM | partial: driver untested on a Mac |
 | P1.1 | ROB | gem5, BOOM | pass |
-| P1.2 | int, FP and flags register headroom | gem5 RISC-V, gem5 ARM | pass |
-| P1.3 | load and store queues | gem5 | pass |
+| P1.2 | int, FP and flags register headroom | gem5 RISC-V, gem5 ARM, BOOM | pass |
+| P1.3 | load and store queues | gem5, BOOM, SimEng | pass |
 | P1.4 | near-ties and shared pools | gem5 | pass |
-| P1.5 | scheduler queues and queue sharing | gem5 | pass |
+| P1.5 | scheduler queues and queue sharing | gem5, SimEng | pass |
 | P1.6 | rename width, move elimination, zero idioms | x86 | pass |
 | P1.7 | retire width | gem5 | pass |
 | P1.8 | instruction latency and throughput | gem5, x86 | pass |
@@ -34,13 +34,13 @@ Pass means within max(2 entries, 2%) of the configured value unless noted.
 | P3.7 | mispredict penalty | gem5 | partial |
 | P3.8 | decoupled fetch and fetch-directed prefetch | gem5 | control |
 | P3.9 | fetch queue depth | gem5 | pass |
-| P3.10 | loop buffer | | blocked: gem5 has none |
+| P3.10 | loop buffer | SimEng | pass |
 | P4.1 | coalesced retire groups (rule A4) | toy, gem5 | pass |
 | P4.2 | LSQ allocated at issue (rule A5) | toy, gem5 | pass |
 | P4.3 | load address and value prediction | toy | pass |
 | P4.4 | two-level store queue (rule A1) | toy | pass |
 | P4.5 | fusion and elimination vs retire structures | x86 | pass |
-| P5.1 | window structures vs published sizes | x86 | partial: x86 offsets uncalibrated |
+| P5.1 | window structures vs published sizes | x86 | partial: most read 0-5 low |
 | P5.2 | published Firestorm numbers | M1 | blocked: needs an M1 |
 | P5.3 | new Firestorm measurements | M1 | blocked: needs an M1 |
 | P5.4 | Icestorm (E-core) | M1 | blocked: needs an M1 |
