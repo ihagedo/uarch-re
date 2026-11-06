@@ -19,7 +19,7 @@ Pass means within max(2 entries, 2%) of the configured value unless noted.
 | P1.5 | scheduler queues and queue sharing | gem5, SimEng | pass |
 | P1.6 | rename width, move elimination, zero idioms | x86 | pass |
 | P1.7 | retire width | gem5 | pass |
-| P1.8 | instruction latency and throughput | gem5, x86 | pass |
+| P1.8 | instruction latency and throughput | gem5, gem5 ARM, x86 | pass |
 | P2.1 | cache capacity, line size, associativity, latency | gem5 | pass |
 | P2.2 | TLB sizes and page-walk cost | gem5 full-system | pass |
 | P2.3 | memory-level parallelism (MSHRs) | gem5 | pass |

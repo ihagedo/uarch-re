@@ -19,6 +19,7 @@ also covers setup.
 
 Values not in dispute. A miss here points at the setup, not the core.
 
+- [ ] `run sched P1.8`: add 1 cycle, 6 a cycle; mul 3, 2 a cycle; udiv 9; fadd 3; fmul and fmadd 4, 4 a cycle; fdiv 10; fsqrt 13 (Johnson's tables)
 - [ ] `run mem P2.1`: L1D 128 KiB, 64 B lines, 8 ways, 3-cycle pointer chase; L2 12 MiB, 128 B lines; DRAM 300-350 cycles (7-cpu, Frumusanu, Handley, Johnson)
 - [ ] `run mem P2.2`: L1 dTLB 160 entries, L2 TLB 3072 (7-cpu, Frumusanu, Handley, Chen)
 - [ ] `run fe P3.1`: 8 instructions a cycle (Johnson, Handley, Frumusanu)

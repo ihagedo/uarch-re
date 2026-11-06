@@ -21,9 +21,11 @@ import m1_sched as ms  # noqa: E402
 import native  # noqa: E402
 from uarchre.backends.isa.aarch64 import SRC_A  # noqa: E402
 from uarchre.kernels.scheduler import (  # noqa: E402
+    MICRO,
     A64AsmEmitter,
     alu_mix,
     dispatch_probe,
+    micro_op,
     multi_source,
     nop_stream,
     retire_drain,
@@ -179,6 +181,7 @@ def m1_kernels():
         *(alu_mix(2, f, 16, 8, A64) for f in ms.ELIM_FILLERS),
         retire_drain(64, 24, 528, A64),
         nop_stream(64, A64),
+        *(micro_op(t, kind, 9) for t in MICRO for kind in ("lat", "tput")),
     ]
 
 
@@ -221,6 +224,24 @@ class TestKernels(unittest.TestCase):
         self.assertEqual(alu_mix(1, "nop", 8, 8, A64).params["asm"][8:], ["nop"] * 8)
         self.assertEqual(alu_mix(1, "int", 8, 8, A64).params["asm"][8:], asm[:8])
 
+    def test_micro_layout(self):
+        self.assertEqual(
+            micro_op("udiv", "lat", 2).params["asm"], ["fmov d25, #1.0"] + ["udiv x9, x9, x8"] * 2
+        )
+        tput = micro_op("fmul", "tput", 9).params["asm"][1:]
+        self.assertEqual(tput[0], "fmul d16, d30, d31")
+        self.assertEqual(tput[8], tput[0])  # 8 rotating destinations
+        self.assertEqual(len(set(tput)), 8)
+        self.assertEqual(micro_op("vadd", "tput", 2).params["asm"][2], "add v17.2d, v30.2d, v31.2d")
+        self.assertEqual(set(MICRO), set(ms.MICRO_PUB))
+
+    def test_micro_reps_last_a_millisecond(self):
+        for t, pub in ms.MICRO_PUB.items():
+            for kind, ks in ms.MICRO_K.items():
+                cyc = ks[-1] * pub[kind == "tput"]
+                iters = max(1000, int(ms.MICRO_CYCLES / cyc))
+                self.assertGreaterEqual(iters * cyc / CLOCK, 0.9e-3, (t, kind))
+
     def test_m1_register_rules(self):
         em = A64AsmEmitter("cntvct")
         head = em.loop_head()
@@ -250,6 +271,7 @@ RATIO = 7.68  # 24 MHz x 1024 ticks per 3.2 GHz cycle
 DISPATCH_Q = {"add": (6, 100), "mul": (2, 40), "fabs": (4, 44 / 3), "fcmp": (1, 44 / 3)}  # (rate, buffer)
 REFILL = {"add": 0, "mul": 0, "fabs": 2 / 3, "fcmp": 2 / 3}  # t0: one FP buffer of 14.7 reads 12 and 14
 MOV_ALU = {"nop": 0, "int": 8, "movimm": 6}  # fillers per 8 on an ALU
+MICRO_CORE = dict(ms.MICRO_PUB, fdiv=(12, 1), add=(1, 0.25))  # two readings off Johnson's table
 
 
 def model(p):
@@ -262,6 +284,8 @@ def model(p):
     if "mix" in p:
         alu = p["adds"] + MOV_ALU[p["mix"]] * p["fill"] / 8
         return p["k"] * max(alu / 6, (p["adds"] + p["fill"]) / 8) + 5
+    if "test" in p:
+        return p["k"] * MICRO_CORE[p["test"]][p["kind"] == "tput"] + 4
     if "links" in p:
         return p["links"] * 13 + p["k"] / 56
     if "filler" not in p:
@@ -413,6 +437,16 @@ class TestAnalysis(unittest.TestCase):
         self.assertEqual(got["retire.drain"]["published"], 56)
         self.assertAlmostEqual(got["nop_stream"]["value"], 8, delta=0.1)
         self.assertEqual(got["nop_stream"]["flags"], [])
+
+    def test_micro(self):
+        _, rows = ms.run_micro(FakeRunner(), args())
+        got = {r["structure"]: r for r in rows}
+        self.assertEqual(len(rows), 2 * len(MICRO))
+        self.assertAlmostEqual(got["micro.fsqrt.lat"]["value"], 13, delta=0.05)
+        self.assertAlmostEqual(got["micro.mul.tput"]["value"], 0.5, delta=0.01)
+        self.assertEqual(got["micro.udiv.lat"]["published"], 9)
+        flagged = [r["structure"] for r in rows if "micro.differs" in r["flags"]]
+        self.assertEqual(flagged, ["micro.add.tput", "micro.fdiv.lat"])  # 4 adds a cycle, not 6; fdiv 12
 
 
 class TestCLI(unittest.TestCase):

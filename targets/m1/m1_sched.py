@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Schedulers and dispatch (P1.5), mov #imm ALU share (P1.6-movimm), retire bandwidth (P1.7) on Apple silicon.
+"""Schedulers, mov #imm ALU share, retire bandwidth, instruction timing (P1.5-P1.8) on Apple silicon.
 
-  python3 targets/m1/m1_sched.py [P1.5] [P1.6-movimm] [P1.7] [--parts sizes,pairing,dispatch]
+  python3 targets/m1/m1_sched.py [P1.5] [P1.6-movimm] [P1.7] [P1.8] [--parts sizes,pairing,dispatch]
       [--fp-filler both]
   python3 targets/m1/m1_sched.py --gem5-smoke --tag smoke
 
@@ -28,8 +28,10 @@ from uarchre.analysis.knee import find_knee  # noqa: E402
 from uarchre.analysis.protocol import _fine_grid  # noqa: E402
 from uarchre.kernels.scheduler import (  # noqa: E402
     A64AsmEmitter,
+    MICRO,
     alu_mix,
     dispatch_probe,
+    micro_op,
     multi_source,
     nop_stream,
     parse_multi,
@@ -84,6 +86,27 @@ STREAM_K = [512, 1024, 1536, 2048]
 ELIM = {"adds": 80, "fill": 16}
 ELIM_K = [4, 8, 12, 16]
 ELIM_FILLERS = ("nop", "movimm", "int")
+# P1.8: Johnson's tables (dougallj-applecpu), (latency, cycles per instruction); udiv is his slow
+# 64-bit case, the one a divide by 1 hits
+MICRO_PUB = {
+    "add": (1, 1 / 6),
+    "csel": (1, 1 / 3),
+    "mul": (3, 0.5),
+    "madd": (3, 1),
+    "udiv": (9, 2),
+    "fadd": (3, 0.25),
+    "fmul": (4, 0.25),
+    "fmadd": (4, 0.25),
+    "fdiv": (10, 1),
+    "fsqrt": (13, 2),
+    "fabs": (2, 0.25),
+    "vadd": (2, 0.25),
+}
+MICRO_K = {"lat": [8, 16, 24, 32], "tput": [16, 32, 48, 64]}
+MICRO_CYCLES = 3_200_000  # ~1 ms per rep at the largest K
+# flagged further from Johnson's than 0.25 cycles + 5 % (latency) or 15 % (cycles per instruction: an
+# Icestorm add reads 0.25 against 1/6)
+MICRO_OFF = {"lat": (0.25, 0.05), "tput": (0.0, 0.15)}
 # >= ~1 ms per rep
 ITERS = {"sched": 11000, "dispatch": 56000, "drain": 12000, "stream": 60000, "elim": 60000}
 REPS = 4  # inner reps per point; rep 0 warms the code
@@ -103,6 +126,7 @@ SMOKE = {
     "stream_k": [64, 128, 192, 256],
     "elim": ELIM,
     "elim_k": [2, 4, 6, 8],
+    "micro_k": {"lat": [4, 8, 12, 16], "tput": [8, 16, 24, 32]},
     "iters": {k: 40 for k in ITERS},
     "reps": 2,
     "outer_reps": 2,
@@ -143,6 +167,7 @@ def config(r, args):
             "stream_k": STREAM_K,
             "elim": ELIM,
             "elim_k": ELIM_K,
+            "micro_k": MICRO_K,
             "iters": ITERS,
             "reps": REPS,
             "outer_reps": opt(args, "outer_reps"),
@@ -577,6 +602,45 @@ def run_retire(r, args):
     return raw, rows
 
 
+def run_micro(r, args):
+    cfg = config(r, args)
+    tests = [(t, kind) for t in MICRO for kind in ("lat", "tput")]
+
+    def one(tk):
+        t, kind = tk
+        ks = cfg["micro_k"][kind]
+        pub = MICRO_PUB[t][kind == "tput"]
+        iters = cfg["iters"]["sched"] if r.smoke else max(1000, int(MICRO_CYCLES / (ks[-1] * pub)))
+        make = lambda k: micro_op(t, kind, k, ISA)
+        return slope_curve(r, cfg, f"micro_{t}_{kind}", make, ks, iters, "P1.8")
+
+    fits = dict(zip(tests, pmap(one, tests, cfg["jobs"])))
+    rows = []
+    for (t, kind), f in fits.items():
+        pub = MICRO_PUB[t][kind == "tput"]
+        v, se = f["slope"], f["slope_se"]
+        a, rel = MICRO_OFF[kind]
+        off = abs(v - pub) > a + rel * pub
+        rows.append(
+            {
+                "structure": f"micro.{t}.{kind}",
+                "value": v,
+                "ci": [v - 2 * se, v + 2 * se],
+                "unit": "cycles" if kind == "lat" else "cycles/instr",
+                "published": pub,
+                "source": "dougallj-applecpu",
+                "flags": f["flags"] + (["micro.differs"] if off else []),
+                "note": f"slope over K = {f['ks']}, "
+                f"{MICRO[t][kind == 'tput'].format(r='x9', f='d16', v='v16')}",
+            }
+        )
+    raw = {
+        "config": {k: v for k, v in cfg.items() if k != "jobs"},
+        **{f"{t}.{k}": f for (t, k), f in fits.items()},
+    }
+    return raw, rows
+
+
 def alu_share(b, n=4000, rng=None):
     """movimm fillers per 8 that take an ALU, 8 (movimm - nop) / (int - nop) in cycles per block.
     With rng, b holds (slope, se) pairs and the 95 % interval of normal draws is returned."""
@@ -634,8 +698,8 @@ def run_elim(r, args):
     return raw, rows
 
 
-POCS = {"P1.5": run_sched, "P1.6-movimm": run_elim, "P1.7": run_retire}
-EST_MIN = {"P1.5": 10, "P1.6-movimm": 1, "P1.7": 1}
+POCS = {"P1.5": run_sched, "P1.6-movimm": run_elim, "P1.7": run_retire, "P1.8": run_micro}
+EST_MIN = {"P1.5": 10, "P1.6-movimm": 1, "P1.7": 1, "P1.8": 2}
 
 
 def build_parser():

@@ -69,7 +69,7 @@ tar czf m1-results.tgz results/m1
 ## The other kernels
 
 ```sh
-python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~57 in all)
+python3 targets/m1/m1_kernels.py list            # PoCs and rough minutes (~59 in all)
 python3 targets/m1/m1_kernels.py run all --tag m1
 python3 targets/m1/m1_kernels.py run pred P3.6   # one family, some PoCs
 ```

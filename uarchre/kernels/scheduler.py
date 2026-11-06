@@ -185,6 +185,38 @@ def nop_stream(k, isa="riscv64"):
     return asm_kernel(f"nop_stream_{k}", ["nop"] * k, depth=0, isa=isa, k=k)
 
 
+# P1.8 (AArch64): one dependent chain, and the same instruction writing 8 rotating registers from fixed
+# sources. Chains multiply and divide by d25 = 1.0, so every value stays a normal double.
+MICRO = {
+    "add": ("add x9, x9, x6", "add {r}, x6, x7"),
+    "csel": ("csel x9, x9, x6, eq", "csel {r}, x6, x7, eq"),
+    "mul": ("mul x9, x9, x8", "mul {r}, x6, x7"),
+    "madd": ("madd x9, x9, x8, x7", "madd {r}, x6, x7, x8"),
+    "udiv": ("udiv x9, x9, x8", "udiv {r}, x6, x8"),  # x8 = 1: the full 64-bit quotient
+    "fadd": ("fadd d16, d16, d30", "fadd {f}, d30, d31"),
+    "fmul": ("fmul d16, d16, d25", "fmul {f}, d30, d31"),
+    "fmadd": ("fmadd d16, d16, d25, d30", "fmadd {f}, d30, d31, d30"),
+    "fdiv": ("fdiv d16, d16, d25", "fdiv {f}, d30, d31"),
+    "fsqrt": ("fsqrt d16, d16", "fsqrt {f}, d30"),
+    "fabs": ("fabs d16, d16", "fabs {f}, d30"),
+    "vadd": ("add v16.2d, v16.2d, v30.2d", "add {v}.2d, v30.2d, v31.2d"),
+}
+
+
+def micro_op(test, kind, k, isa="aarch64"):
+    """P1.8: K `test` instructions per iteration, chained ("lat") or independent ("tput"). The slope of
+    cycles per iteration in K is the latency or the cycles per instruction."""
+    if isa != "aarch64":
+        raise ValueError("micro_op is AArch64 only (x86: kernels/x86_micro.py)")
+    chain, free = MICRO[test]
+    body = [chain] * k if kind == "lat" else [
+        free.format(r=INT_ROT[i % 8], f=FP_ROT[i % 8], v=f"v{16 + i % 8}") for i in range(k)
+    ]  # fmt: skip
+    return asm_kernel(
+        f"micro_{test}_{kind}_{k}", ["fmov d25, #1.0", *body], 0, isa, test=test, kind=kind, k=k
+    )
+
+
 def alu_mix(k, filler, adds=80, fill=16, isa="riscv64"):
     """P1.6: K blocks of `adds` independent adds, then `fill` window fillers (FILLERS names). The
     adds keep the ALUs the bottleneck, so cycles per block grow with every filler that needs one."""
